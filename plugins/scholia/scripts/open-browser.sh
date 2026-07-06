@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -eu
 # open-browser.sh — open a file in the system default browser across
 # macOS, Linux, and Windows (Git Bash / Cygwin).
 #
@@ -6,15 +7,20 @@
 #
 # Requires bash: it branches on $OSTYPE, which is a bash-only variable.
 
+if [ -z "${1:-}" ] || [ ! -e "$1" ]; then
+  echo "usage: open-browser.sh <file>" >&2
+  exit 1
+fi
+
 file="$1"
 
-if [[ "$OSTYPE" == darwin* ]]; then
+if [[ "${OSTYPE:-}" == darwin* ]]; then
   open "$file"
-elif [[ "$OSTYPE" == linux-gnu* ]]; then
+elif [[ "${OSTYPE:-}" == linux-gnu* ]]; then
   xdg-open "$file"
-elif [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+elif [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
   start "$file"
 else
-  echo "open-browser.sh: unsupported platform \"$OSTYPE\" — please open \"$file\" in your browser manually." >&2
+  echo "open-browser.sh: unsupported platform \"${OSTYPE:-}\" — please open \"$file\" in your browser manually." >&2
   exit 1
 fi

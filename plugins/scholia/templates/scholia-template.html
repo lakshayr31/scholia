@@ -186,15 +186,14 @@
 
 <script>
 (function() {
+  const FILENAME = location.pathname.split('/').pop() || 'document';
   function computeStorageKey() {
-    const filename = location.pathname.split('/').pop() || 'document';
     const meta = document.querySelector('meta[name="scholia-doc-version"]');
     const content = meta && meta.getAttribute('content');
     const version = content ? content : '0';
-    return 'scholia::' + filename + '::' + version;
+    return 'scholia::' + FILENAME + '::' + version;
   }
   const STORAGE_KEY = computeStorageKey();
-  const FILENAME = location.pathname.split('/').pop() || 'document';
 
   /**
    * Comment shape:

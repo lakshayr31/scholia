@@ -52,4 +52,4 @@ Scholia auto-selects when Claude is about to produce a substantial multi-section
 
 ## Platform notes
 
-Generation is pure shell plus Read/Write/Edit — no Python or Node required. Opening the browser is handled by `scripts/open-browser.sh`, which uses `open` on macOS, `xdg-open` on Linux, and `start` on Windows (Git Bash / Cygwin / WSL).
+Generation is pure shell plus Read/Write/Edit — no Python or Node required. Opening the browser is handled by `scripts/open-browser.sh`, which uses `open` on macOS, `xdg-open` on Linux (including WSL, whose `$OSTYPE` is `linux-gnu*`), and `start` on Windows (Git Bash / Cygwin).

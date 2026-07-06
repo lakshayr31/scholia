@@ -1,7 +1,7 @@
 ---
 name: scholia
 description: Render a substantial, multi-section document — a plan, report, research write-up, comparison, design doc, or similar — as a self-contained commentable HTML file and open it in the browser so the user can leave anchored inline comments and paste them back for revision. Use this when you are about to hand the user a long, structured document, or when the user explicitly asks for scholia or a "commentable" / "annotatable" version. Do NOT use it for short answers, quick code snippets, single-paragraph replies, small edits, or ordinary conversation.
-allowed-tools: Read, Write, Edit, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/open-browser.sh *), Bash(open *), Bash(xdg-open *), Bash(start *)
+allowed-tools: Read, Write, Edit, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/open-browser.sh *), Bash(mkdir -p ./.claude-output)
 ---
 
 # scholia — commentable document generator
@@ -64,9 +64,20 @@ can always force it explicitly.
    - Do NOT touch the `<style>`, the `<script>`, `<header class="bar">`,
      `<aside class="sidebar">`, the selection toolbar, or the compose popup — those power
      the commenting. Keep the `<head>` `<title>` in sync with the `<h1>`.
+   - **HTML-escape the content you author.** When filling `<title>`, `<h1>`, the
+     `<p class="summary">`, any section body text, and — with special care — every
+     `<pre><code>` block, replace literal `<` with `&lt;`, `>` with `&gt;`, and `&`
+     with `&amp;`. Otherwise content such as `std::vector<int>`, `A < B`, or `a && b`
+     is parsed as markup and corrupts the render (a stray `<int>` becomes an unknown
+     tag, `&amp` an entity). This matters most inside code blocks, where such
+     characters are common.
 
-8. **Open it in the browser:**
-   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/open-browser.sh" "./.claude-output/<filename>"`
+8. **Open it in the browser** by running the executable helper directly (no `bash `
+   prefix — that prefix would defeat the `allowed-tools` grant, which is keyed to the
+   script path):
+   `"${CLAUDE_PLUGIN_ROOT}/scripts/open-browser.sh" "./.claude-output/<filename>"`
+   Note: this open step may prompt for permission once if the `${CLAUDE_PLUGIN_ROOT}`
+   grant doesn't line up with the expanded runtime path; approve it and it won't ask again.
 
 9. **Tell the user, briefly:** the doc is open in the browser; hover any line for the gutter
    `+` or select text to comment on a span; when done, click **Copy comments** (top right)
