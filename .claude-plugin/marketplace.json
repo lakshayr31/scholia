@@ -1,0 +1,14 @@
+{
+  "name": "scholia",
+  "owner": {
+    "name": "Lakshay Rastogi"
+  },
+  "description": "Turn Claude's long-form output into self-contained, commentable HTML you can annotate inline and send back for revision.",
+  "plugins": [
+    {
+      "name": "scholia",
+      "source": "./plugins/scholia",
+      "description": "Render substantial Claude documents as commentable HTML, open them in the browser, and round-trip inline comments back to Claude."
+    }
+  ]
+}
