@@ -586,8 +586,9 @@
   });
 
   function buildCommentsBlock() {
+    const sentinel = '<!-- scholia:revision v1 -->';
     const header = 'The comments below are anchored feedback on `' + FILENAME + '`. Please revise the document to address each comment, then regenerate the commentable HTML (same filename).';
-    const lines = [header, '', `## Comments on ${FILENAME}`, ''];
+    const lines = [sentinel, header, '', `## Comments on ${FILENAME}`, ''];
     comments.forEach((c, i) => {
       const tag = c.kind === 'block' ? 'Line' : 'Span';
       lines.push(`[#${i+1} — ${tag} in section: "${c.sectionTitle}"]`);

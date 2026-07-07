@@ -1,7 +1,7 @@
 ---
 name: scholia
 description: Render a substantial, multi-section document — a plan, report, research write-up, comparison, design doc, or similar — as a self-contained commentable HTML file and open it in the browser so the user can leave anchored inline comments and paste them back for revision. Use this when you are about to hand the user a long, structured document, or when the user explicitly asks for scholia or a "commentable" / "annotatable" version. Do NOT use it for short answers, quick code snippets, single-paragraph replies, small edits, or ordinary conversation.
-allowed-tools: Read, Write, Edit, Bash(${CLAUDE_PLUGIN_ROOT}/scripts/open-browser.sh *), Bash(mkdir -p ./.claude-output)
+allowed-tools: Read, Write, Edit, Bash(mkdir -p ./.claude-output), Bash(open *), Bash(xdg-open *), Bash(start *)
 ---
 
 # scholia — commentable document generator
@@ -34,10 +34,17 @@ can always force it explicitly.
      1–3 lines of visible context, and dense material (tables, code, long lists) tucked
      into `<details><summary>…</summary>…</details>`.
 
-2. **Pick `type` and `topic`.** `type` is the closest of: `plan`, `report`, `research`,
-   `compare`, `explore`, `review`, `explain`. `topic` is a short kebab-case slug. Build
-   the filename `<type>_<topic>_<YYYY-MM-DD>.html` using today's date. If that name
-   already exists and this is a NEW document (not a revision), append `_2`, `_3`, ….
+2. **Determine the filename.** This depends on whether you are revising or generating fresh:
+   - **REVISION path** (the paste is a revision request — see "Revision behaviour"): reuse the
+     filename **verbatim** from the pasted block. Take it from the backticked name in the header
+     line or from the `## Comments on <filename>` line, and write to exactly that name. Do NOT
+     re-derive `<type>_<topic>_<date>` — the whole point is to overwrite the same file so the
+     browser reopens the doc the user commented on.
+   - **NEW-DOC path** (a fresh document, not a revision): pick `type` — the closest of `plan`,
+     `report`, `research`, `compare`, `explore`, `review`, `explain` — and `topic`, a short
+     kebab-case slug. Build `<type>_<topic>_<YYYY-MM-DD>.html` using today's date. If a file with
+     that name already exists in `./.claude-output/`, append `_2`, then `_3`, … until the name is
+     unique, so a new document never clobbers an earlier one.
 
 3. **Ensure the output directory exists** (run from the user's cwd):
    `mkdir -p ./.claude-output`
@@ -72,12 +79,31 @@ can always force it explicitly.
      tag, `&amp` an entity). This matters most inside code blocks, where such
      characters are common.
 
-8. **Open it in the browser** by running the executable helper directly (no `bash `
-   prefix — that prefix would defeat the `allowed-tools` grant, which is keyed to the
-   script path):
-   `"${CLAUDE_PLUGIN_ROOT}/scripts/open-browser.sh" "./.claude-output/<filename>"`
-   Note: this open step may prompt for permission once if the `${CLAUDE_PLUGIN_ROOT}`
-   grant doesn't line up with the expanded runtime path; approve it and it won't ask again.
+7.5. **Self-verify the generated file before opening it.** Read the finished file back and
+   confirm ALL of the following. If any check fails, fix the file and re-verify — do not open a
+   broken document:
+   - **No template remnants.** The strings `__TITLE__`, `__SUMMARY__`, and the demo section's
+     "Try the commenting" heading must NOT appear anywhere in the file. If any remain, you
+     failed to fully replace the placeholder content between `<!-- CONTENT START -->` and
+     `<!-- CONTENT END -->`.
+   - **Version stamp present.** The `<meta name="scholia-doc-version" content="…">` tag must have
+     a **non-empty** `content` — the unique stamp from step 6. An empty stamp breaks comment
+     scoping.
+   - **Exactly one `<h1>`, and well-formed sections.** The document must contain exactly one
+     `<h1>`. Every `<section>` must have an `id` that is both **non-empty** and **unique** across
+     the file — the comment engine derives a comment's section from `section[id]`, so duplicate or
+     missing ids mis-anchor comments.
+   - **Escaped code blocks.** Spot-check each `<pre><code>` block for raw, unescaped `<` or `&`.
+     Any literal `<` (not `&lt;`) or bare `&` (not `&amp;`/`&lt;`/… entity) inside code must be
+     escaped, or the block corrupts the render.
+
+8. **Open it in the browser** by running the platform-appropriate open command directly for the OS
+   you are running on — pick the branch, do not guess:
+   - **macOS:** `open "./.claude-output/<filename>"`
+   - **Linux (including WSL):** `xdg-open "./.claude-output/<filename>"`
+   - **Windows (Git Bash / Cygwin):** `start "" "./.claude-output/<filename>"`
+   Choose based on the known platform. If none is available, tell the user the file path and ask
+   them to open it manually.
 
 9. **Tell the user, briefly:** the doc is open in the browser; hover any line for the gutter
    `+` or select text to comment on a span; when done, click **Copy comments** (top right)
@@ -85,22 +111,31 @@ can always force it explicitly.
 
 ## Revision behaviour
 
-When the user pastes a block that begins with the self-instructing header:
+**Recognising a revision request.** Treat a pasted block as a scholia revision request if EITHER
+of these holds — do NOT key recognition on the exact prose of the self-instructing sentence, which
+may be reworded or dropped:
 
-`The comments below are anchored feedback on ` + "`<filename>`" + `. Please revise the document to address each comment, then regenerate the commentable HTML (same filename).`
+- it contains the stable sentinel line `<!-- scholia:revision v1 -->`, OR
+- it contains at least one comment entry matching the structural pattern: a header line
+  `[#N — Line in section: "…"]` or `[#N — Span in section: "…"]`, followed by a quoted anchor line
+  `> "…"`, followed by a `Comment: …` line.
 
-then:
+When either condition matches, treat the whole paste as anchored feedback and revise the document.
+
+Then:
 
 1. Read each entry — index, `Line`/`Span`, section title, the quoted anchor, and the comment.
    Use the quote + section title to locate the target in the current document.
 2. Apply **every** requested change to the document content.
-3. Re-run the generation procedure to the **same filename**, with a **new** unique version
-   stamp (step 6). The new stamp gives a fresh storage key, so the old — now possibly
-   misaligned — comments are retired and the reopened doc is clean.
+3. Re-run the generation procedure, reusing the filename **verbatim** from the pasted block (the
+   backticked name in the header line or the `## Comments on <filename>` line — see step 2's
+   REVISION path; never re-derive it), with a **new** unique version stamp (step 6). The new stamp
+   gives a fresh storage key, so the old — now possibly misaligned — comments are retired and the
+   reopened doc is clean.
 4. Keep section `id`s stable across the revision where you can, so any surviving comments
    still map to the right section.
-5. If the pasted block carries the header but has **zero** comment entries, ask the user what
-   they want changed rather than inventing edits.
+5. If the pasted block is recognised as a revision request (e.g. the sentinel is present) but has
+   **zero** comment entries, ask the user what they want changed rather than inventing edits.
 
 ## Notes
 
