@@ -115,15 +115,17 @@ may be reworded or dropped:
 
 - it contains the stable sentinel line `<!-- scholia:revision v1 -->`, OR
 - it contains at least one comment entry matching the structural pattern: a header line
-  `[#N — Line in section: "…"]` or `[#N — Span in section: "…"]`, followed by a quoted anchor line
-  `> "…"`, followed by a `Comment: …` line.
+  `[#N — Line in section: "…"]` or `[#N — Span in section: "…"]` (a stable `· id=<commentId>` may
+  appear right after `#N`), followed by a quoted anchor line `> "…"`, followed by a `Comment: …` line.
 
 When either condition matches, treat the whole paste as anchored feedback and revise the document.
 
 Then:
 
-1. Read each entry — index, `Line`/`Span`, section title, the quoted anchor, and the comment.
-   Use the quote + section title to locate the target in the current document.
+1. Read each entry — its index, its stable `id` (shown as `· id=<commentId>` in the header line),
+   `Line`/`Span`, section title, the quoted anchor, and the comment. Use the quote + section title to
+   locate the target in the current document, and keep each `id` — you will key its resolution note
+   back to it in step 4.
 2. Apply **every** requested change to the document content.
 3. Re-run the generation procedure, reusing the filename **verbatim** from the pasted block (the
    backticked name in the header line or the `## Comments on <filename>` line — see step 2's
@@ -133,9 +135,19 @@ Then:
    original text where that survives and going **detached** (kept in the list, no highlight) where
    you rewrote or removed it. Keeping the filename identical is exactly what lets the browser reopen
    the same doc with its comment thread intact — so the user can confirm each change and Resolve it.
-4. Keep section `id`s stable across the revision where you can, so carried-over comments
+4. **Emit a resolution-notes map.** In the regenerated HTML, add ONE JSON script tag —
+   `<script type="application/json" id="scholia-resolution-notes">{ … }</script>` — placed inside
+   `<body>` but OUTSIDE `<main>` (e.g. right before `</body>`), so it never affects the document's
+   content hash or the commentable text. Its JSON is an object keyed by the comment `id`s from the
+   pasted block, each value a one-line, plain-English summary of HOW you addressed that comment —
+   e.g. `{"c7a3":"Lowered the enterprise tier to 10% and added an annual option.","c9f1":"Rewrote the vague Q3 wording to a concrete 15 Aug date."}`.
+   Include ONLY ids you actually addressed; a comment you did not change gets no entry (its card then
+   shows without a note — never blank or invented). On reload the engine merges each note onto its
+   carried-over comment, so the user sees "How it was addressed" beside their original comment before
+   they Resolve it. HTML-escape the note values like any other authored content.
+5. Keep section `id`s stable across the revision where you can, so carried-over comments
    still map to the right section.
-5. If the pasted block is recognised as a revision request (e.g. the sentinel is present) but has
+6. If the pasted block is recognised as a revision request (e.g. the sentinel is present) but has
    **zero** comment entries, ask the user what they want changed rather than inventing edits.
 
 ## Notes

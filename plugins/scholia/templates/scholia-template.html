@@ -138,6 +138,7 @@
   /* Carried-over + detached treatments (resolve lifecycle) */
   .comment-item.carried-over { border-left: 3px solid var(--accent); }
   .comment-item .detached-note { font-size: 11px; color: var(--accent); font-weight: 600; margin-bottom: 8px; }
+  .comment-item .resolution-note { font-size: 12px; color: var(--ink-soft); background: var(--accent-soft); border-radius: 4px; padding: 6px 8px; margin-top: 8px; }
 
   /* Sidebar Open / Resolved tabs */
   #comment-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
@@ -233,6 +234,7 @@
       this.occurrence = props.occurrence;     // selection comments only
       this.generation = props.generation || null;  // birth doc-hash: the content-hash when it was created
       this.resolved = props.resolved || false;      // true once the user confirms it was addressed
+      this.resolutionNote = props.resolutionNote || null;  // Claude's "how it was addressed" summary
       this.detached = false;                  // transient — set by DocModel.anchor() on every load
     }
     // 'fresh' when made on the current version; 'carried-over' when it survived a regeneration.
@@ -254,6 +256,7 @@
         generation: this.generation,
         resolved: this.resolved,
       };
+      if (this.resolutionNote) o.resolutionNote = this.resolutionNote;
       if (this.kind === 'block') o.blockId = this.blockId;
       else o.occurrence = this.occurrence;
       return o;
@@ -403,7 +406,27 @@
       let raw = [];
       try { raw = JSON.parse(localStorage.getItem(this.storageKey) || '[]'); } catch(e) { raw = []; }
       this.comments = raw.map(o => Comment.fromJSON(o));
+      this.mergeResolutionNotes();
       this.comments.forEach(c => this.docModel.anchor(c));
+    }
+    // Pull Claude's "how it was addressed" notes out of the regenerated doc and
+    // attach each to its matching comment by stable id. The notes ride through the
+    // HTML because localStorage is not writable by Claude. Absent tag = no-op.
+    mergeResolutionNotes() {
+      const el = document.getElementById('scholia-resolution-notes');
+      if (!el) return;
+      let map;
+      try { map = JSON.parse(el.textContent || '{}'); } catch(e) { return; }
+      if (!map || typeof map !== 'object') return;
+      let changed = false;
+      Object.keys(map).forEach(id => {
+        const c = this.find(id);
+        if (c && typeof map[id] === 'string' && c.resolutionNote !== map[id]) {
+          c.resolutionNote = map[id];
+          changed = true;
+        }
+      });
+      if (changed) this.save();
     }
     save() {
       try {
@@ -453,7 +476,7 @@
       const lines = [sentinel, header, '', `## Comments on ${this.filename}`, ''];
       this.openSet().forEach((c, i) => {
         const tag = c.kind === 'block' ? 'Line' : 'Span';
-        lines.push(`[#${i+1} — ${tag} in section: "${c.sectionTitle}"]`);
+        lines.push(`[#${i+1} · id=${c.id} — ${tag} in section: "${c.sectionTitle}"]`);
         lines.push(`> "${c.quote}"`);
         lines.push(`Comment: ${c.comment}`);
         lines.push('');
@@ -599,6 +622,9 @@
       const kindLabel = c.kind === 'block' ? 'LINE' : 'SPAN';
       const cls = ['comment-item', c.kind === 'block' ? 'block-comment' : '', carried ? 'carried-over' : '', c.resolved ? 'resolved' : '', c.detached ? 'detached' : ''].filter(Boolean).join(' ');
       const detachedNote = c.detached ? '<div class="detached-note">⚠ original text removed</div>' : '';
+      const resolutionNote = c.resolutionNote
+        ? `<div class="resolution-note"><strong>How it was addressed:</strong> ${escapeHtml(c.resolutionNote)}</div>`
+        : '';
       let actions;
       if (c.resolved) actions = ['reopen', 'jump'];
       else if (carried) actions = ['resolve', 'jump', 'edit', 'delete'];
@@ -610,6 +636,7 @@
           <div class="quote">${escapeHtml(c.quote)}</div>
           ${detachedNote}
           <div class="body">${escapeHtml(c.comment)}</div>
+          ${resolutionNote}
           <div class="row">${buttons}</div>
         </div>`;
     }
