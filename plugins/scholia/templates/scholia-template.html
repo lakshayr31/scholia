@@ -237,8 +237,14 @@
       this.resolutionNote = props.resolutionNote || null;  // Claude's "how it was addressed" summary
       this.detached = false;                  // transient — set by DocModel.anchor() on every load
     }
-    // 'fresh' when made on the current version; 'carried-over' when it survived a regeneration.
+    // 'fresh' when made on the current version; 'carried-over' when it survived a
+    // regeneration. A comment carrying a resolutionNote was addressed in a revision
+    // round, so it counts as carried-over even when that revision left textContent
+    // (and thus the hash) unchanged — e.g. an HTML-entity-escaping or <head>/title-only
+    // fix. Without this, such a comment would render its note but show no Resolve
+    // button and stay stuck open forever, re-copied every round.
     status(currentHash) {
+      if (this.resolutionNote) return 'carried-over';
       return this.generation === currentHash ? 'fresh' : 'carried-over';
     }
     isOpen() { return !this.resolved; }       // Open tab / copy membership
@@ -445,16 +451,14 @@
       try { map = JSON.parse(el.textContent || '{}'); } catch(e) { return; }
       if (!map || typeof map !== 'object') return;
       let changed = false;
-      // The tag is authoritative for THIS generation: a note NOT re-issued in the
-      // current map describes a change no longer in the doc, so clear it before
-      // applying the current entries. Guarded by the presence of the tag above, so a
-      // plain reload (no tag) is the only path that preserves prior notes.
-      this.comments.forEach(c => {
-        if (c.resolutionNote && !Object.prototype.hasOwnProperty.call(map, c.id)) {
-          c.resolutionNote = null;
-          changed = true;
-        }
-      });
+      // The map is only ever THIS round's delta: copy sends only open comments, and
+      // the SKILL emits notes only for ids addressed this round. Each regeneration
+      // starts from a fresh template, so the map never accumulates prior rounds. We
+      // therefore only SET/overwrite notes from the current entries and NEVER clear a
+      // note due to absence from the map — otherwise a prior round's audit note (on a
+      // resolved comment, or a still-open carried comment not re-addressed) would be
+      // wiped on the very next regeneration. Notes persist until the comment is
+      // deleted or the user clears all.
       Object.keys(map).forEach(id => {
         const c = this.find(id);
         if (c && typeof map[id] === 'string' && c.resolutionNote !== map[id]) {
@@ -513,8 +517,10 @@
       this.openSet().forEach((c) => {
         const tag = c.kind === 'block' ? 'Line' : 'Span';
         const num = this.comments.indexOf(c) + 1;   // global ordinal — matches sidebar cards + doc badges
-        lines.push(`[#${num} · id=${c.id} — ${tag} in section: "${c.sectionTitle}"]`);
+        const detachedMark = c.detached ? ' · detached' : '';
+        lines.push(`[#${num} · id=${c.id} — ${tag} in section: "${c.sectionTitle}"${detachedMark}]`);
         lines.push(`> "${c.quote}"`);
+        if (c.detached) lines.push('(note: original text no longer present — locate by section + comment)');
         lines.push(`Comment: ${c.comment}`);
         lines.push('');
       });

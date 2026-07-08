@@ -125,7 +125,10 @@ Then:
 1. Read each entry — its index, its stable `id` (shown as `· id=<commentId>` in the header line),
    `Line`/`Span`, section title, the quoted anchor, and the comment. Use the quote + section title to
    locate the target in the current document, and keep each `id` — you will key its resolution note
-   back to it in step 4.
+   back to it in step 4. If an entry is marked `· detached` in its header line (or its quoted anchor
+   can no longer be found in the current document because a prior round rewrote or removed that text),
+   do NOT skip it — fall back to the section title plus the comment text to decide what the change
+   should be.
 2. Apply **every** requested change to the document content.
 3. Re-run the generation procedure, reusing the filename **verbatim** from the pasted block (the
    backticked name in the header line or the `## Comments on <filename>` line — see step 2's
