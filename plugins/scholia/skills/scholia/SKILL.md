@@ -56,11 +56,12 @@ can always force it explicitly.
    `cp "${CLAUDE_PLUGIN_ROOT}/templates/scholia-template.html" ./.claude-output/<filename>`
    (If `cp` is not permitted, Read the template and Write the identical bytes to the target.)
 
-6. **Inject a unique version stamp.** In the copied file, replace the empty `content` of
-   `<meta name="scholia-doc-version" content="">` with a value unique to THIS generation —
-   a Unix timestamp, an ISO timestamp, or a short content hash. This stamp scopes the
-   browser's saved comments; it MUST change on every generation and regeneration, otherwise
-   stale comments will reload and mis-anchor.
+6. **No version stamp — comments persist.** Earlier versions injected a per-generation stamp so
+   that regenerating a doc *retired* its comments. That is no longer the behaviour. Comments now
+   **persist** across regenerations under a single filename-scoped key (`scholia::<filename>`):
+   they carry over, gain a Resolve button, and move to a Resolved tab once you confirm them. There
+   is nothing to stamp — the engine derives everything from the document's content hash on its own.
+   Skip straight to filling the template.
 
 7. **Fill the template** with Edit (leave the comment machinery alone):
    - `<title>__TITLE__</title>` → the document title,
@@ -86,9 +87,6 @@ can always force it explicitly.
      "Try the commenting" heading must NOT appear anywhere in the file. If any remain, you
      failed to fully replace the placeholder content between `<!-- CONTENT START -->` and
      `<!-- CONTENT END -->`.
-   - **Version stamp present.** The `<meta name="scholia-doc-version" content="…">` tag must have
-     a **non-empty** `content` — the unique stamp from step 6. An empty stamp breaks comment
-     scoping.
    - **Exactly one `<h1>`, and well-formed sections.** The document must contain exactly one
      `<h1>`. Every `<section>` must have an `id` that is both **non-empty** and **unique** across
      the file — the comment engine derives a comment's section from `section[id]`, so duplicate or
@@ -129,10 +127,13 @@ Then:
 2. Apply **every** requested change to the document content.
 3. Re-run the generation procedure, reusing the filename **verbatim** from the pasted block (the
    backticked name in the header line or the `## Comments on <filename>` line — see step 2's
-   REVISION path; never re-derive it), with a **new** unique version stamp (step 6). The new stamp
-   gives a fresh storage key, so the old — now possibly misaligned — comments are retired and the
-   reopened doc is clean.
-4. Keep section `id`s stable across the revision where you can, so any surviving comments
+   REVISION path; never re-derive it). Do NOT rotate any version stamp — **comments persist across
+   the regeneration** under the single `scholia::<filename>` key. Every prior comment carries over:
+   on reload it becomes **Carried-over** (a "↻" mark and a Resolve button), re-anchoring to its
+   original text where that survives and going **detached** (kept in the list, no highlight) where
+   you rewrote or removed it. Keeping the filename identical is exactly what lets the browser reopen
+   the same doc with its comment thread intact — so the user can confirm each change and Resolve it.
+4. Keep section `id`s stable across the revision where you can, so carried-over comments
    still map to the right section.
 5. If the pasted block is recognised as a revision request (e.g. the sentinel is present) but has
    **zero** comment entries, ask the user what they want changed rather than inventing edits.

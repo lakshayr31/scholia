@@ -2,7 +2,6 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="scholia-doc-version" content="">
 <title>__TITLE__</title>
 <style>
   :root {
@@ -135,6 +134,10 @@
   .comment-item button { font-family: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--rule); background: transparent; border-radius: 3px; cursor: pointer; color: var(--ink-soft); }
   .comment-item button:hover { color: var(--accent); border-color: var(--accent); }
   .empty { color: var(--ink-soft); font-size: 13px; }
+
+  /* Carried-over + detached treatments (resolve lifecycle) */
+  .comment-item.carried-over { border-left: 3px solid var(--accent); }
+  .comment-item .detached-note { font-size: 11px; color: var(--accent); font-weight: 600; margin-bottom: 8px; }
 </style>
 </head>
 <body>
@@ -209,6 +212,12 @@
       this.createdAt = props.createdAt;
       this.blockId = props.blockId;           // block comments only
       this.occurrence = props.occurrence;     // selection comments only
+      this.generation = props.generation || null;  // birth doc-hash: the content-hash when it was created
+      this.detached = false;                  // transient — set by DocModel.anchor() on every load
+    }
+    // 'fresh' when made on the current version; 'carried-over' when it survived a regeneration.
+    status(currentHash) {
+      return this.generation === currentHash ? 'fresh' : 'carried-over';
     }
     toJSON() {
       const o = {
@@ -219,6 +228,7 @@
         quote: this.quote,
         comment: this.comment,
         createdAt: this.createdAt,
+        generation: this.generation,
       };
       if (this.kind === 'block') o.blockId = this.blockId;
       else o.occurrence = this.occurrence;
@@ -231,6 +241,33 @@
   class DocModel {
     constructor(mainEl) {
       this.mainEl = mainEl;
+      // Capture pristine content BEFORE any decoration mutates <main>, so the
+      // generation hash reflects the authored doc — not injected +/badges/markers.
+      this.pristineText = mainEl.textContent;
+      this.hash = DocModel.djb2(this.pristineText);
+    }
+    static djb2(text) {
+      let h = 5381;
+      for (let i = 0; i < text.length; i++) h = ((h * 33) + text.charCodeAt(i)) >>> 0;
+      return h.toString(36);
+    }
+    // Decide whether a comment's original anchor text still exists in this doc.
+    // Sets the transient `detached` flag and returns whether it re-anchored.
+    anchor(comment) {
+      let matched;
+      if (comment.kind === 'block') {
+        matched = !!this.findBlockElement(comment.blockId);
+      } else {
+        matched = DocModel.countOccurrences(this.pristineText, comment.quote) >= comment.occurrence;
+      }
+      comment.detached = !matched;
+      return matched;
+    }
+    static countOccurrences(hay, needle) {
+      if (!needle) return 0;
+      let count = 0, idx = -1;
+      while ((idx = hay.indexOf(needle, idx + 1)) !== -1) count++;
+      return count;
     }
     splitCodeLines() {
       this.mainEl.querySelectorAll('pre').forEach(pre => {
@@ -304,25 +341,56 @@
     constructor(filename, docModel) {
       this.filename = filename;
       this.docModel = docModel;
-      this.storageKey = CommentStore.computeStorageKey(filename);
+      this.storageKey = CommentStore.computeStorageKey(filename);  // filename-only — no version segment
       this.comments = [];
+      this.migrateLegacyIfNeeded();
       this.load();
     }
     static computeStorageKey(filename) {
-      const meta = document.querySelector('meta[name="scholia-doc-version"]');
-      const content = meta && meta.getAttribute('content');
-      const version = content ? content : '0';
-      return 'scholia::' + filename + '::' + version;
+      return 'scholia::' + filename;
+    }
+    // One-time upgrade from v0's versioned keys. If the new key holds no comments
+    // yet but a legacy scholia::<file>::<version> blob exists, copy the newest one
+    // forward (newest = latest createdAt among its comments) and stamp each carried
+    // comment's generation with the current hash, so migrated v0 comments load as
+    // Fresh on the doc they were made on rather than spuriously Carried-over.
+    migrateLegacyIfNeeded() {
+      let current = null;
+      try { current = JSON.parse(localStorage.getItem(this.storageKey) || 'null'); } catch(e) {}
+      if (Array.isArray(current) && current.length > 0) return;
+      const legacyPrefix = 'scholia::' + this.filename + '::';
+      let best = null, bestTime = '';
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || key.indexOf(legacyPrefix) !== 0) continue;
+        let arr;
+        try { arr = JSON.parse(localStorage.getItem(key) || '[]'); } catch(e) { continue; }
+        if (!Array.isArray(arr) || !arr.length) continue;
+        const maxCreated = arr.reduce((m, c) => (c && c.createdAt > m ? c.createdAt : m), '');
+        if (best === null || maxCreated > bestTime) { best = arr; bestTime = maxCreated; }
+      }
+      if (!best) return;
+      const stamped = best.map(c => (c && typeof c === 'object' && !c.generation)
+        ? Object.assign({}, c, { generation: this.docModel.hash })
+        : c);
+      try { localStorage.setItem(this.storageKey, JSON.stringify(stamped)); } catch(e) {}
     }
     load() {
       let raw = [];
       try { raw = JSON.parse(localStorage.getItem(this.storageKey) || '[]'); } catch(e) { raw = []; }
       this.comments = raw.map(o => Comment.fromJSON(o));
+      this.comments.forEach(c => this.docModel.anchor(c));
     }
     save() {
-      localStorage.setItem(this.storageKey, JSON.stringify(this.comments));
+      try {
+        localStorage.setItem(this.storageKey, JSON.stringify(this.comments));
+      } catch(e) {
+        console.error('scholia: failed to save comments', e);
+        try { alert('Could not save comments — browser storage may be full. Your latest change may not have persisted.'); } catch(_) {}
+      }
     }
     add(comment) {
+      comment.generation = this.docModel.hash;  // born on the current version → Fresh
       this.comments.push(comment);
       this.save();
     }
@@ -384,6 +452,7 @@
     applyBlockBadges() {
       this.store.comments.forEach((c, i) => {
         if (c.kind !== 'block') return;
+        if (c.detached) return;               // detached comments live only in the sidebar list
         const target = this.docModel.findBlockElement(c.blockId);
         if (!target) return;
         target.classList.add('has-block-comment');
@@ -398,6 +467,7 @@
     applySelectionHighlights() {
       this.store.comments.forEach((c, i) => {
         if (c.kind !== 'selection') return;
+        if (c.detached) return;               // no highlight for detached comments
         this.wrapNthOccurrenceInMain(c.quote, c.occurrence, c.id, i + 1);
       });
     }
@@ -457,18 +527,25 @@
         this.$list.innerHTML = '<p class="empty">No comments yet. Hover any line for the gutter <code>+</code> button, or select text to comment on a span.</p>';
         return;
       }
-      this.$list.innerHTML = comments.map((c, i) => `
-        <div class="comment-item ${c.kind === 'block' ? 'block-comment' : ''}" data-comment-id="${c.id}">
-          <div class="meta">#${i+1} · ${c.kind === 'block' ? 'LINE' : 'SPAN'} · ${escapeHtml(c.sectionTitle)}</div>
+      const hash = this.docModel.hash;
+      this.$list.innerHTML = comments.map((c, i) => {
+        const carried = c.status(hash) === 'carried-over';
+        const carryMark = carried ? '↻ ' : '';
+        const cls = ['comment-item', c.kind === 'block' ? 'block-comment' : '', carried ? 'carried-over' : '', c.detached ? 'detached' : ''].filter(Boolean).join(' ');
+        const detachedNote = c.detached ? '<div class="detached-note">⚠ original text removed</div>' : '';
+        return `
+        <div class="${cls}" data-comment-id="${c.id}">
+          <div class="meta">${carryMark}#${i+1} · ${c.kind === 'block' ? 'LINE' : 'SPAN'} · ${escapeHtml(c.sectionTitle)}</div>
           <div class="quote">${escapeHtml(c.quote)}</div>
+          ${detachedNote}
           <div class="body">${escapeHtml(c.comment)}</div>
           <div class="row">
             <button data-action="jump" data-id="${c.id}">Jump</button>
             <button data-action="edit" data-id="${c.id}">Edit</button>
             <button data-action="delete" data-id="${c.id}">Delete</button>
           </div>
-        </div>
-      `).join('');
+        </div>`;
+      }).join('');
     }
     bindListClicks() {
       this.$list.addEventListener('click', (e) => {
