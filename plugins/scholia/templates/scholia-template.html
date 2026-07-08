@@ -138,6 +138,23 @@
   /* Carried-over + detached treatments (resolve lifecycle) */
   .comment-item.carried-over { border-left: 3px solid var(--accent); }
   .comment-item .detached-note { font-size: 11px; color: var(--accent); font-weight: 600; margin-bottom: 8px; }
+
+  /* Sidebar Open / Resolved tabs */
+  #comment-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  #comment-tabs .tab { flex: 1; font-family: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--rule); background: var(--bg); border-radius: 4px; cursor: pointer; color: var(--ink-soft); }
+  #comment-tabs .tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .resolve-all { width: 100%; font-family: inherit; font-size: 12px; padding: 7px 8px; margin-bottom: 12px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent); border-radius: 4px; cursor: pointer; font-weight: 600; }
+  .resolve-all:hover { background: var(--accent); color: white; }
+  .comment-item.resolved { opacity: 0.6; }
+  .comment-item.resolved .quote { background: #e8e8e5; color: #999; text-decoration: line-through; }
+
+  /* Doc highlight — resolved (greyed / struck) + carried-over (rotate glyph) */
+  .commented.resolved { background: #e8e8e5; color: #999; text-decoration: line-through; }
+  .commented.resolved .marker { background: #bbb; }
+  .commented.carried { box-shadow: 0 0 0 1px var(--accent) inset; }
+  .block-badge.resolved { background: #bbb; }
+  .has-block-comment.resolved { box-shadow: inset 3px 0 0 #bbb; }
+  .block-badge.carried::after { content: '↻'; position: absolute; top: -7px; right: -7px; font-size: 9px; line-height: 1; background: var(--panel); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 1px 2px; }
 </style>
 </head>
 <body>
@@ -174,6 +191,7 @@
 
 <aside class="sidebar">
   <h2>Comments</h2>
+  <div id="comment-tabs"></div>
   <div id="comment-list"><p class="empty">No comments yet. Hover any line for the gutter <code>+</code> button, or select text to comment on a span.</p></div>
 </aside>
 
@@ -199,6 +217,7 @@
   function isExcluded(el) {
     return !!el.closest('nav.toc, aside, header, #compose, #selection-toolbar');
   }
+  const BUTTON_LABELS = { resolve: 'Resolve', reopen: 'Reopen', jump: 'Jump', edit: 'Edit', delete: 'Delete' };
 
   // ---------- Comment — one comment's data ----------
   class Comment {
@@ -213,12 +232,16 @@
       this.blockId = props.blockId;           // block comments only
       this.occurrence = props.occurrence;     // selection comments only
       this.generation = props.generation || null;  // birth doc-hash: the content-hash when it was created
+      this.resolved = props.resolved || false;      // true once the user confirms it was addressed
       this.detached = false;                  // transient — set by DocModel.anchor() on every load
     }
     // 'fresh' when made on the current version; 'carried-over' when it survived a regeneration.
     status(currentHash) {
       return this.generation === currentHash ? 'fresh' : 'carried-over';
     }
+    isOpen() { return !this.resolved; }       // Open tab / copy membership
+    resolve() { this.resolved = true; }
+    reopen() { this.resolved = false; }
     toJSON() {
       const o = {
         id: this.id,
@@ -229,6 +252,7 @@
         comment: this.comment,
         createdAt: this.createdAt,
         generation: this.generation,
+        resolved: this.resolved,
       };
       if (this.kind === 'block') o.blockId = this.blockId;
       else o.occurrence = this.occurrence;
@@ -405,11 +429,29 @@
     find(id) {
       return this.comments.find(c => c.id === id) || null;
     }
+    resolve(id) {
+      const c = this.find(id);
+      if (c) { c.resolve(); this.save(); }
+    }
+    reopen(id) {
+      const c = this.find(id);
+      if (c) { c.reopen(); this.save(); }
+    }
+    resolveAllOld() {
+      const hash = this.docModel.hash;
+      let changed = false;
+      this.openSet().forEach(c => {
+        if (c.status(hash) === 'carried-over') { c.resolve(); changed = true; }
+      });
+      if (changed) this.save();
+    }
+    openSet() { return this.comments.filter(c => c.isOpen()); }    // Open tab = copy set
+    resolvedSet() { return this.comments.filter(c => !c.isOpen()); }
     buildCommentsBlock() {
       const sentinel = '<!-- scholia:revision v1 -->';
       const header = 'The comments below are anchored feedback on `' + this.filename + '`. Please revise the document to address each comment, then regenerate the commentable HTML (same filename).';
       const lines = [sentinel, header, '', `## Comments on ${this.filename}`, ''];
-      this.comments.forEach((c, i) => {
+      this.openSet().forEach((c, i) => {
         const tag = c.kind === 'block' ? 'Line' : 'Span';
         lines.push(`[#${i+1} — ${tag} in section: "${c.sectionTitle}"]`);
         lines.push(`> "${c.quote}"`);
@@ -444,20 +486,23 @@
     }
     clearBlockBadges() {
       this.mainEl.querySelectorAll('.has-block-comment').forEach(el => {
-        el.classList.remove('has-block-comment');
+        el.classList.remove('has-block-comment', 'resolved');
         const badge = el.querySelector('.block-badge');
         if (badge) badge.remove();
       });
     }
     applyBlockBadges() {
+      const hash = this.docModel.hash;
       this.store.comments.forEach((c, i) => {
         if (c.kind !== 'block') return;
         if (c.detached) return;               // detached comments live only in the sidebar list
         const target = this.docModel.findBlockElement(c.blockId);
         if (!target) return;
+        const carried = c.status(hash) === 'carried-over';
         target.classList.add('has-block-comment');
+        if (c.resolved) target.classList.add('resolved');
         const badge = document.createElement('span');
-        badge.className = 'block-badge';
+        badge.className = 'block-badge' + (c.resolved ? ' resolved' : (carried ? ' carried' : ''));
         badge.textContent = i + 1;
         badge.title = c.comment;
         badge.dataset.commentId = c.id;
@@ -465,13 +510,15 @@
       });
     }
     applySelectionHighlights() {
+      const hash = this.docModel.hash;
       this.store.comments.forEach((c, i) => {
         if (c.kind !== 'selection') return;
         if (c.detached) return;               // no highlight for detached comments
-        this.wrapNthOccurrenceInMain(c.quote, c.occurrence, c.id, i + 1);
+        const extra = c.resolved ? ['resolved'] : (c.status(hash) === 'carried-over' ? ['carried'] : []);
+        this.wrapNthOccurrenceInMain(c.quote, c.occurrence, c.id, i + 1, extra);
       });
     }
-    wrapNthOccurrenceInMain(text, n, commentId, index) {
+    wrapNthOccurrenceInMain(text, n, commentId, index, extraClasses) {
       const main = this.mainEl;
       const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
         acceptNode: (node) => {
@@ -491,6 +538,7 @@
             const after = node.nodeValue.slice(pos + text.length);
             const span = document.createElement('span');
             span.className = 'commented';
+            if (extraClasses && extraClasses.length) span.classList.add(...extraClasses);
             span.dataset.commentId = commentId;
             span.appendChild(document.createTextNode(match));
             const marker = document.createElement('span');
@@ -516,54 +564,76 @@
       this.store = store;
       this.docModel = docModel;
       this.actions = actions;               // { onChange, onEdit }
+      this.$tabs = document.getElementById('comment-tabs');
       this.$list = document.getElementById('comment-list');
       this.$count = document.getElementById('count');
-      this.bindListClicks();
+      this.activeTab = 'open';              // 'open' | 'resolved'
+      this.bindClicks();
     }
     render() {
-      const comments = this.store.comments;
-      this.$count.textContent = comments.length;
-      if (!comments.length) {
-        this.$list.innerHTML = '<p class="empty">No comments yet. Hover any line for the gutter <code>+</code> button, or select text to comment on a span.</p>';
-        return;
-      }
       const hash = this.docModel.hash;
-      this.$list.innerHTML = comments.map((c, i) => {
-        const carried = c.status(hash) === 'carried-over';
-        const carryMark = carried ? '↻ ' : '';
-        const cls = ['comment-item', c.kind === 'block' ? 'block-comment' : '', carried ? 'carried-over' : '', c.detached ? 'detached' : ''].filter(Boolean).join(' ');
-        const detachedNote = c.detached ? '<div class="detached-note">⚠ original text removed</div>' : '';
-        return `
+      const openList = this.store.openSet();
+      const resolvedList = this.store.resolvedSet();
+      this.$count.textContent = this.store.comments.length;
+      this.$tabs.innerHTML =
+        `<button class="tab ${this.activeTab === 'open' ? 'active' : ''}" data-tab="open">Open (${openList.length})</button>` +
+        `<button class="tab ${this.activeTab === 'resolved' ? 'active' : ''}" data-tab="resolved">Resolved (${resolvedList.length})</button>`;
+
+      const list = this.activeTab === 'open' ? openList : resolvedList;
+      const carriedOpen = openList.filter(c => c.status(hash) === 'carried-over');
+      let html = '';
+      if (this.activeTab === 'open' && carriedOpen.length > 0) {
+        html += `<button class="resolve-all" data-action="resolve-all">Resolve all carried-over (${carriedOpen.length})</button>`;
+      }
+      if (!list.length) {
+        html += `<p class="empty">${this.activeTab === 'open' ? 'No open comments.' : 'Nothing resolved yet.'}</p>`;
+      } else {
+        html += list.map(c => this.renderCard(c, hash)).join('');
+      }
+      this.$list.innerHTML = html;
+    }
+    renderCard(c, hash) {
+      const num = this.store.comments.indexOf(c) + 1;   // stable global number, matches doc badge
+      const carried = c.status(hash) === 'carried-over';
+      const carryMark = (carried && !c.resolved) ? '↻ ' : '';
+      const kindLabel = c.kind === 'block' ? 'LINE' : 'SPAN';
+      const cls = ['comment-item', c.kind === 'block' ? 'block-comment' : '', carried ? 'carried-over' : '', c.resolved ? 'resolved' : '', c.detached ? 'detached' : ''].filter(Boolean).join(' ');
+      const detachedNote = c.detached ? '<div class="detached-note">⚠ original text removed</div>' : '';
+      let actions;
+      if (c.resolved) actions = ['reopen', 'jump'];
+      else if (carried) actions = ['resolve', 'jump', 'edit', 'delete'];
+      else actions = ['jump', 'edit', 'delete'];         // fresh
+      const buttons = actions.map(a => `<button data-action="${a}" data-id="${c.id}">${BUTTON_LABELS[a]}</button>`).join('');
+      return `
         <div class="${cls}" data-comment-id="${c.id}">
-          <div class="meta">${carryMark}#${i+1} · ${c.kind === 'block' ? 'LINE' : 'SPAN'} · ${escapeHtml(c.sectionTitle)}</div>
+          <div class="meta">${carryMark}#${num} · ${kindLabel} · ${escapeHtml(c.sectionTitle)}</div>
           <div class="quote">${escapeHtml(c.quote)}</div>
           ${detachedNote}
           <div class="body">${escapeHtml(c.comment)}</div>
-          <div class="row">
-            <button data-action="jump" data-id="${c.id}">Jump</button>
-            <button data-action="edit" data-id="${c.id}">Edit</button>
-            <button data-action="delete" data-id="${c.id}">Delete</button>
-          </div>
+          <div class="row">${buttons}</div>
         </div>`;
-      }).join('');
     }
-    bindListClicks() {
+    bindClicks() {
+      this.$tabs.addEventListener('click', (e) => {
+        const tab = e.target.closest('.tab');
+        if (!tab) return;
+        this.activeTab = tab.dataset.tab;
+        this.render();
+      });
       this.$list.addEventListener('click', (e) => {
         const btn = e.target.closest('button[data-action]');
         if (btn) {
           e.stopPropagation();
-          const id = btn.dataset.id;
           const action = btn.dataset.action;
+          if (action === 'resolve-all') { this.store.resolveAllOld(); this.actions.onChange(); return; }
+          const id = btn.dataset.id;
           const c = this.store.find(id);
           if (!c) return;
-          if (action === 'delete') {
-            this.store.remove(id);
-            this.actions.onChange();
-          } else if (action === 'edit') {
-            this.actions.onEdit(c);
-          } else if (action === 'jump') {
-            this.jumpToComment(c);
-          }
+          if (action === 'delete') { this.store.remove(id); this.actions.onChange(); }
+          else if (action === 'edit') { this.actions.onEdit(c); }
+          else if (action === 'jump') { this.jumpToComment(c); }
+          else if (action === 'resolve') { this.store.resolve(id); this.actions.onChange(); }
+          else if (action === 'reopen') { this.store.reopen(id); this.actions.onChange(); }
           return;
         }
         const item = e.target.closest('.comment-item');
@@ -754,7 +824,7 @@
         document.body.classList.toggle('sidebar-open');
       });
       document.getElementById('btn-copy').addEventListener('click', async () => {
-        if (!this.store.comments.length) { alert('No comments to copy.'); return; }
+        if (!this.store.openSet().length) { alert('No open comments to copy.'); return; }
         const text = this.store.buildCommentsBlock();
         try {
           await navigator.clipboard.writeText(text);
