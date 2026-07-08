@@ -186,458 +186,540 @@
 
 <script>
 (function() {
+  // ---------- Module constants + helpers ----------
   const FILENAME = location.pathname.split('/').pop() || 'document';
-  function computeStorageKey() {
-    const meta = document.querySelector('meta[name="scholia-doc-version"]');
-    const content = meta && meta.getAttribute('content');
-    const version = content ? content : '0';
-    return 'scholia::' + FILENAME + '::' + version;
-  }
-  const STORAGE_KEY = computeStorageKey();
-
-  /**
-   * Comment shape:
-   *   { id, kind: 'block' | 'selection', sectionId, sectionTitle, comment, createdAt,
-   *     // block:
-   *     blockId, quote,
-   *     // selection:
-   *     quote, occurrence }
-   */
-  let comments = [];
-  try { comments = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch(e) {}
-
-  let pending = null; // current selection or block context being commented on
-
-  const $toolbar = document.getElementById('selection-toolbar');
-  const $compose = document.getElementById('compose');
-  const $composeQuote = document.getElementById('compose-quote');
-  const $composeText = document.getElementById('compose-text');
-  const $list = document.getElementById('comment-list');
-  const $count = document.getElementById('count');
-
-  function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(comments)); }
-  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-
-  // ---------- Block ID derivation (stable across reloads) ----------
-  function nearestSection(el) {
-    while (el && el !== document.body) {
-      if (el.nodeType === 1 && el.tagName === 'SECTION' && el.id) return el;
-      el = el.parentNode;
-    }
-    return null;
-  }
-  function sectionContext(el) {
-    const section = nearestSection(el);
-    if (section) {
-      const h = section.querySelector('h2');
-      return { sectionId: section.id, sectionTitle: h ? h.textContent.trim() : section.id };
-    }
-    const h1 = document.querySelector('main h1');
-    return { sectionId: '__document__', sectionTitle: h1 ? h1.textContent.trim() : 'document' };
-  }
-
-  function deriveBlockId(el) {
-    const section = nearestSection(el);
-    const root = section || document.querySelector('main');
-    const tag = el.tagName.toLowerCase();
-    const sel = (el.classList.contains('code-line')) ? '.code-line' : tag;
-    const peers = Array.from(root.querySelectorAll(sel));
-    const idx = peers.indexOf(el);
-    const prefix = section ? section.id : 'doc';
-    return `block-${prefix}-${sel.replace('.','')}-${idx}`;
-  }
-
-  // ---------- Split <pre> blocks into per-line spans ----------
-  function splitCodeLines() {
-    document.querySelectorAll('main pre').forEach(pre => {
-      if (pre.dataset.linesSplit) return;
-      const code = pre.querySelector('code') || pre;
-      const text = code.textContent;
-      const lines = text.split('\n');
-      code.textContent = '';
-      lines.forEach((line, i) => {
-        const span = document.createElement('span');
-        span.className = 'code-line';
-        span.textContent = line + (i < lines.length - 1 ? '\n' : '');
-        code.appendChild(span);
-      });
-      pre.dataset.linesSplit = '1';
-    });
-  }
-
-  // ---------- Gutter buttons for line-by-line commenting ----------
   const COMMENTABLE_SELECTOR = 'main p, main li, main h2, main h3, main h4, main blockquote, main pre .code-line';
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
   function isExcluded(el) {
     return !!el.closest('nav.toc, aside, header, #compose, #selection-toolbar');
   }
-  function decorateCommentableBlocks() {
-    document.querySelectorAll(COMMENTABLE_SELECTOR).forEach(el => {
-      if (isExcluded(el)) return;
-      if (el.dataset.decorated) return;
-      el.classList.add('commentable');
-      el.dataset.decorated = '1';
-      const btn = document.createElement('button');
-      btn.className = 'add-line-comment';
-      btn.type = 'button';
-      btn.textContent = '+';
-      btn.title = 'Comment on this line';
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const ctx = sectionContext(el);
-        pending = {
-          kind: 'block',
-          blockId: deriveBlockId(el),
-          quote: el.textContent.trim().slice(0, 300),
-          sectionId: ctx.sectionId,
-          sectionTitle: ctx.sectionTitle,
-          element: el,
-        };
-        openCompose(el.getBoundingClientRect(), pending.quote, '');
-      });
-      el.appendChild(btn);
-    });
-  }
 
-  // ---------- Compose popup ----------
-  function openCompose(rect, quoteText, initialText) {
-    $composeQuote.textContent = '"' + quoteText + '"';
-    $composeText.value = initialText || '';
-    $compose.dataset.editId = '';
-    const top = window.scrollY + rect.top + rect.height + 8;
-    const left = Math.min(window.scrollX + rect.left, window.innerWidth - 360);
-    $compose.style.top = top + 'px';
-    $compose.style.left = Math.max(8, left) + 'px';
-    $compose.style.display = 'block';
-    $toolbar.style.display = 'none';
-    setTimeout(() => $composeText.focus(), 0);
-  }
-
-  document.getElementById('compose-cancel').addEventListener('click', () => {
-    $compose.style.display = 'none';
-    pending = null;
-  });
-
-  document.getElementById('compose-save').addEventListener('click', () => {
-    const text = $composeText.value.trim();
-    if (!text) return;
-    const editId = $compose.dataset.editId;
-    if (editId) {
-      const c = comments.find(x => x.id === editId);
-      if (c) c.comment = text;
-    } else if (pending) {
-      const base = {
-        id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6),
-        kind: pending.kind,
-        sectionId: pending.sectionId,
-        sectionTitle: pending.sectionTitle,
-        quote: pending.quote,
-        comment: text,
-        createdAt: new Date().toISOString(),
+  // ---------- Comment — one comment's data ----------
+  class Comment {
+    constructor(props) {
+      this.id = props.id;
+      this.kind = props.kind;                 // 'block' | 'selection'
+      this.sectionId = props.sectionId;
+      this.sectionTitle = props.sectionTitle;
+      this.quote = props.quote;
+      this.comment = props.comment;
+      this.createdAt = props.createdAt;
+      this.blockId = props.blockId;           // block comments only
+      this.occurrence = props.occurrence;     // selection comments only
+    }
+    toJSON() {
+      const o = {
+        id: this.id,
+        kind: this.kind,
+        sectionId: this.sectionId,
+        sectionTitle: this.sectionTitle,
+        quote: this.quote,
+        comment: this.comment,
+        createdAt: this.createdAt,
       };
-      if (pending.kind === 'block') base.blockId = pending.blockId;
-      else if (pending.kind === 'selection') base.occurrence = pending.occurrence;
-      comments.push(base);
+      if (this.kind === 'block') o.blockId = this.blockId;
+      else o.occurrence = this.occurrence;
+      return o;
     }
-    save();
-    render();
-    $compose.style.display = 'none';
-    pending = null;
-    try { window.getSelection().removeAllRanges(); } catch(e) {}
-  });
-
-  // ---------- Selection handling ----------
-  function getOccurrenceInMain(range) {
-    const main = document.querySelector('main');
-    const text = range.toString();
-    if (!text) return -1;
-    const pre = document.createRange();
-    pre.selectNodeContents(main);
-    try { pre.setEnd(range.startContainer, range.startOffset); } catch(e) { return -1; }
-    const startOffset = pre.toString().length;
-    const full = main.textContent;
-    let occurrence = 0, idx = -1;
-    while ((idx = full.indexOf(text, idx + 1)) !== -1) {
-      occurrence++;
-      if (idx >= startOffset) return occurrence;
-    }
-    return occurrence;
+    static fromJSON(o) { return new Comment(o); }
   }
 
-  document.addEventListener('mouseup', (e) => {
-    if ($compose.contains(e.target)) return;
-    setTimeout(() => {
-      const sel = window.getSelection();
-      if (!sel || sel.isCollapsed) { $toolbar.style.display = 'none'; return; }
-      const text = sel.toString().trim();
-      if (!text || text.length < 2) { $toolbar.style.display = 'none'; return; }
-      const range = sel.getRangeAt(0);
-      const main = document.querySelector('main');
-      if (!main.contains(range.startContainer) || !main.contains(range.endContainer)) {
-        $toolbar.style.display = 'none'; return;
-      }
-      const ctx = sectionContext(range.startContainer);
-      pending = {
-        kind: 'selection',
-        sectionId: ctx.sectionId,
-        sectionTitle: ctx.sectionTitle,
-        quote: text,
-        occurrence: getOccurrenceInMain(range),
-      };
-      const rect = range.getBoundingClientRect();
-      $toolbar.style.top = (window.scrollY + rect.top - 36) + 'px';
-      $toolbar.style.left = Math.max(8, window.scrollX + rect.left + rect.width / 2 - 70) + 'px';
-      $toolbar.style.display = 'block';
-    }, 10);
-  });
-
-  document.addEventListener('mousedown', (e) => {
-    if (!$toolbar.contains(e.target) && !$compose.contains(e.target)) {
-      $toolbar.style.display = 'none';
+  // ---------- DocModel — the document's structure authority ----------
+  class DocModel {
+    constructor(mainEl) {
+      this.mainEl = mainEl;
     }
-  });
-
-  document.getElementById('btn-add-comment').addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (!pending || pending.kind !== 'selection') return;
-    const sel = window.getSelection();
-    const rect = sel.getRangeAt(0).getBoundingClientRect();
-    openCompose(rect, pending.quote, '');
-  });
-
-  // ---------- Restoring highlights for selection comments ----------
-  function wrapNthOccurrenceInMain(text, n, commentId, index) {
-    const main = document.querySelector('main');
-    const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => {
-        if (!node.parentElement) return NodeFilter.FILTER_REJECT;
-        if (node.parentElement.closest('.commented, script, style, .add-line-comment, .block-badge, #compose, #selection-toolbar, aside, header')) return NodeFilter.FILTER_REJECT;
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    });
-    let count = 0, node;
-    while ((node = walker.nextNode())) {
-      let from = 0, pos;
-      while ((pos = node.nodeValue.indexOf(text, from)) !== -1) {
-        count++;
-        if (count === n) {
-          const before = node.nodeValue.slice(0, pos);
-          const match = node.nodeValue.slice(pos, pos + text.length);
-          const after = node.nodeValue.slice(pos + text.length);
+    splitCodeLines() {
+      this.mainEl.querySelectorAll('pre').forEach(pre => {
+        if (pre.dataset.linesSplit) return;
+        const code = pre.querySelector('code') || pre;
+        const text = code.textContent;
+        const lines = text.split('\n');
+        code.textContent = '';
+        lines.forEach((line, i) => {
           const span = document.createElement('span');
-          span.className = 'commented';
-          span.dataset.commentId = commentId;
-          span.appendChild(document.createTextNode(match));
-          const marker = document.createElement('span');
-          marker.className = 'marker';
-          marker.textContent = index;
-          span.appendChild(marker);
-          const afterNode = document.createTextNode(after);
-          node.nodeValue = before;
-          node.parentNode.insertBefore(span, node.nextSibling);
-          node.parentNode.insertBefore(afterNode, span.nextSibling);
-          return true;
-        }
-        from = pos + text.length;
-      }
+          span.className = 'code-line';
+          span.textContent = line + (i < lines.length - 1 ? '\n' : '');
+          code.appendChild(span);
+        });
+        pre.dataset.linesSplit = '1';
+      });
     }
-    return false;
-  }
-
-  function clearSelectionHighlights() {
-    document.querySelectorAll('.commented').forEach(span => {
-      const parent = span.parentNode;
-      // strip marker badge children
-      Array.from(span.querySelectorAll('.marker')).forEach(m => m.remove());
-      while (span.firstChild) parent.insertBefore(span.firstChild, span);
-      parent.removeChild(span);
-      parent.normalize();
-    });
-  }
-
-  function clearBlockBadges() {
-    document.querySelectorAll('.has-block-comment').forEach(el => {
-      el.classList.remove('has-block-comment');
-      const badge = el.querySelector('.block-badge');
-      if (badge) badge.remove();
-    });
-  }
-
-  function applyBlockBadges() {
-    comments.forEach((c, i) => {
-      if (c.kind !== 'block') return;
-      // Find the block by walking commentables and matching deriveBlockId
+    nearestSection(el) {
+      while (el && el !== document.body) {
+        if (el.nodeType === 1 && el.tagName === 'SECTION' && el.id) return el;
+        el = el.parentNode;
+      }
+      return null;
+    }
+    sectionContext(el) {
+      const section = this.nearestSection(el);
+      if (section) {
+        const h = section.querySelector('h2');
+        return { sectionId: section.id, sectionTitle: h ? h.textContent.trim() : section.id };
+      }
+      const h1 = this.mainEl.querySelector('h1');
+      return { sectionId: '__document__', sectionTitle: h1 ? h1.textContent.trim() : 'document' };
+    }
+    deriveBlockId(el) {
+      const section = this.nearestSection(el);
+      const root = section || this.mainEl;
+      const tag = el.tagName.toLowerCase();
+      const sel = (el.classList.contains('code-line')) ? '.code-line' : tag;
+      const peers = Array.from(root.querySelectorAll(sel));
+      const idx = peers.indexOf(el);
+      const prefix = section ? section.id : 'doc';
+      return `block-${prefix}-${sel.replace('.','')}-${idx}`;
+    }
+    findBlockElement(blockId) {
       const candidates = document.querySelectorAll(COMMENTABLE_SELECTOR);
-      let target = null;
       for (const el of candidates) {
-        if (deriveBlockId(el) === c.blockId) { target = el; break; }
+        if (this.deriveBlockId(el) === blockId) return el;
       }
-      if (!target) return;
-      target.classList.add('has-block-comment');
-      const badge = document.createElement('span');
-      badge.className = 'block-badge';
-      badge.textContent = i + 1;
-      badge.title = c.comment;
-      badge.dataset.commentId = c.id;
-      target.appendChild(badge);
-    });
-  }
-
-  function applySelectionHighlights() {
-    comments.forEach((c, i) => {
-      if (c.kind !== 'selection') return;
-      wrapNthOccurrenceInMain(c.quote, c.occurrence, c.id, i + 1);
-    });
-  }
-
-  // ---------- Sidebar ----------
-  function renderSidebar() {
-    $count.textContent = comments.length;
-    if (!comments.length) {
-      $list.innerHTML = '<p class="empty">No comments yet. Hover any line for the gutter <code>+</code> button, or select text to comment on a span.</p>';
-      return;
+      return null;
     }
-    $list.innerHTML = comments.map((c, i) => `
-      <div class="comment-item ${c.kind === 'block' ? 'block-comment' : ''}" data-comment-id="${c.id}">
-        <div class="meta">#${i+1} · ${c.kind === 'block' ? 'LINE' : 'SPAN'} · ${escapeHtml(c.sectionTitle)}</div>
-        <div class="quote">${escapeHtml(c.quote)}</div>
-        <div class="body">${escapeHtml(c.comment)}</div>
-        <div class="row">
-          <button data-action="jump" data-id="${c.id}">Jump</button>
-          <button data-action="edit" data-id="${c.id}">Edit</button>
-          <button data-action="delete" data-id="${c.id}">Delete</button>
+    getOccurrenceInMain(range) {
+      const main = this.mainEl;
+      const text = range.toString();
+      if (!text) return -1;
+      const pre = document.createRange();
+      pre.selectNodeContents(main);
+      try { pre.setEnd(range.startContainer, range.startOffset); } catch(e) { return -1; }
+      const startOffset = pre.toString().length;
+      const full = main.textContent;
+      let occurrence = 0, idx = -1;
+      while ((idx = full.indexOf(text, idx + 1)) !== -1) {
+        occurrence++;
+        if (idx >= startOffset) return occurrence;
+      }
+      return occurrence;
+    }
+  }
+
+  // ---------- CommentStore — the collection + persistence ----------
+  class CommentStore {
+    constructor(filename, docModel) {
+      this.filename = filename;
+      this.docModel = docModel;
+      this.storageKey = CommentStore.computeStorageKey(filename);
+      this.comments = [];
+      this.load();
+    }
+    static computeStorageKey(filename) {
+      const meta = document.querySelector('meta[name="scholia-doc-version"]');
+      const content = meta && meta.getAttribute('content');
+      const version = content ? content : '0';
+      return 'scholia::' + filename + '::' + version;
+    }
+    load() {
+      let raw = [];
+      try { raw = JSON.parse(localStorage.getItem(this.storageKey) || '[]'); } catch(e) { raw = []; }
+      this.comments = raw.map(o => Comment.fromJSON(o));
+    }
+    save() {
+      localStorage.setItem(this.storageKey, JSON.stringify(this.comments));
+    }
+    add(comment) {
+      this.comments.push(comment);
+      this.save();
+    }
+    remove(id) {
+      this.comments = this.comments.filter(c => c.id !== id);
+      this.save();
+    }
+    clear() {
+      this.comments = [];
+      this.save();
+    }
+    find(id) {
+      return this.comments.find(c => c.id === id) || null;
+    }
+    buildCommentsBlock() {
+      const sentinel = '<!-- scholia:revision v1 -->';
+      const header = 'The comments below are anchored feedback on `' + this.filename + '`. Please revise the document to address each comment, then regenerate the commentable HTML (same filename).';
+      const lines = [sentinel, header, '', `## Comments on ${this.filename}`, ''];
+      this.comments.forEach((c, i) => {
+        const tag = c.kind === 'block' ? 'Line' : 'Span';
+        lines.push(`[#${i+1} — ${tag} in section: "${c.sectionTitle}"]`);
+        lines.push(`> "${c.quote}"`);
+        lines.push(`Comment: ${c.comment}`);
+        lines.push('');
+      });
+      return lines.join('\n');
+    }
+  }
+
+  // ---------- DocDecorator — in-document highlights + badges ----------
+  class DocDecorator {
+    constructor(mainEl, store, docModel) {
+      this.mainEl = mainEl;
+      this.store = store;
+      this.docModel = docModel;
+    }
+    decorate() {
+      this.clearSelectionHighlights();
+      this.clearBlockBadges();
+      this.applySelectionHighlights();
+      this.applyBlockBadges();
+    }
+    clearSelectionHighlights() {
+      this.mainEl.querySelectorAll('.commented').forEach(span => {
+        const parent = span.parentNode;
+        Array.from(span.querySelectorAll('.marker')).forEach(m => m.remove());
+        while (span.firstChild) parent.insertBefore(span.firstChild, span);
+        parent.removeChild(span);
+        parent.normalize();
+      });
+    }
+    clearBlockBadges() {
+      this.mainEl.querySelectorAll('.has-block-comment').forEach(el => {
+        el.classList.remove('has-block-comment');
+        const badge = el.querySelector('.block-badge');
+        if (badge) badge.remove();
+      });
+    }
+    applyBlockBadges() {
+      this.store.comments.forEach((c, i) => {
+        if (c.kind !== 'block') return;
+        const target = this.docModel.findBlockElement(c.blockId);
+        if (!target) return;
+        target.classList.add('has-block-comment');
+        const badge = document.createElement('span');
+        badge.className = 'block-badge';
+        badge.textContent = i + 1;
+        badge.title = c.comment;
+        badge.dataset.commentId = c.id;
+        target.appendChild(badge);
+      });
+    }
+    applySelectionHighlights() {
+      this.store.comments.forEach((c, i) => {
+        if (c.kind !== 'selection') return;
+        this.wrapNthOccurrenceInMain(c.quote, c.occurrence, c.id, i + 1);
+      });
+    }
+    wrapNthOccurrenceInMain(text, n, commentId, index) {
+      const main = this.mainEl;
+      const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) => {
+          if (!node.parentElement) return NodeFilter.FILTER_REJECT;
+          if (node.parentElement.closest('.commented, script, style, .add-line-comment, .block-badge, #compose, #selection-toolbar, aside, header')) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      let count = 0, node;
+      while ((node = walker.nextNode())) {
+        let from = 0, pos;
+        while ((pos = node.nodeValue.indexOf(text, from)) !== -1) {
+          count++;
+          if (count === n) {
+            const before = node.nodeValue.slice(0, pos);
+            const match = node.nodeValue.slice(pos, pos + text.length);
+            const after = node.nodeValue.slice(pos + text.length);
+            const span = document.createElement('span');
+            span.className = 'commented';
+            span.dataset.commentId = commentId;
+            span.appendChild(document.createTextNode(match));
+            const marker = document.createElement('span');
+            marker.className = 'marker';
+            marker.textContent = index;
+            span.appendChild(marker);
+            const afterNode = document.createTextNode(after);
+            node.nodeValue = before;
+            node.parentNode.insertBefore(span, node.nextSibling);
+            node.parentNode.insertBefore(afterNode, span.nextSibling);
+            return true;
+          }
+          from = pos + text.length;
+        }
+      }
+      return false;
+    }
+  }
+
+  // ---------- SidebarView — the sidebar list + its interactions ----------
+  class SidebarView {
+    constructor(store, docModel, actions) {
+      this.store = store;
+      this.docModel = docModel;
+      this.actions = actions;               // { onChange, onEdit }
+      this.$list = document.getElementById('comment-list');
+      this.$count = document.getElementById('count');
+      this.bindListClicks();
+    }
+    render() {
+      const comments = this.store.comments;
+      this.$count.textContent = comments.length;
+      if (!comments.length) {
+        this.$list.innerHTML = '<p class="empty">No comments yet. Hover any line for the gutter <code>+</code> button, or select text to comment on a span.</p>';
+        return;
+      }
+      this.$list.innerHTML = comments.map((c, i) => `
+        <div class="comment-item ${c.kind === 'block' ? 'block-comment' : ''}" data-comment-id="${c.id}">
+          <div class="meta">#${i+1} · ${c.kind === 'block' ? 'LINE' : 'SPAN'} · ${escapeHtml(c.sectionTitle)}</div>
+          <div class="quote">${escapeHtml(c.quote)}</div>
+          <div class="body">${escapeHtml(c.comment)}</div>
+          <div class="row">
+            <button data-action="jump" data-id="${c.id}">Jump</button>
+            <button data-action="edit" data-id="${c.id}">Edit</button>
+            <button data-action="delete" data-id="${c.id}">Delete</button>
+          </div>
         </div>
-      </div>
-    `).join('');
-  }
-
-  $list.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-action]');
-    if (btn) {
-      e.stopPropagation();
-      const id = btn.dataset.id;
-      const action = btn.dataset.action;
-      const c = comments.find(x => x.id === id);
-      if (!c) return;
-      if (action === 'delete') {
-        comments = comments.filter(x => x.id !== id);
-        save(); render();
-      } else if (action === 'edit') {
-        const target = c.kind === 'block'
-          ? document.querySelector(`.block-badge[data-comment-id="${id}"]`)?.parentElement
-          : document.querySelector(`.commented[data-comment-id="${id}"]`);
-        const rect = target ? target.getBoundingClientRect() : { top: 100, left: 100, height: 20, width: 200 };
-        pending = null;
-        $compose.dataset.editId = id;
-        $composeQuote.textContent = '"' + c.quote + '"';
-        $composeText.value = c.comment;
-        $compose.style.top = (window.scrollY + rect.top + rect.height + 8) + 'px';
-        $compose.style.left = Math.max(8, Math.min(window.scrollX + rect.left, window.innerWidth - 360)) + 'px';
-        $compose.style.display = 'block';
-        setTimeout(() => $composeText.focus(), 0);
-      } else if (action === 'jump') {
-        jumpToComment(c);
+      `).join('');
+    }
+    bindListClicks() {
+      this.$list.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-action]');
+        if (btn) {
+          e.stopPropagation();
+          const id = btn.dataset.id;
+          const action = btn.dataset.action;
+          const c = this.store.find(id);
+          if (!c) return;
+          if (action === 'delete') {
+            this.store.remove(id);
+            this.actions.onChange();
+          } else if (action === 'edit') {
+            this.actions.onEdit(c);
+          } else if (action === 'jump') {
+            this.jumpToComment(c);
+          }
+          return;
+        }
+        const item = e.target.closest('.comment-item');
+        if (item) {
+          const c = this.store.find(item.dataset.commentId);
+          if (c) this.jumpToComment(c);
+        }
+      });
+    }
+    jumpToComment(c) {
+      let target = null;
+      if (c.kind === 'selection') {
+        target = document.querySelector(`.commented[data-comment-id="${c.id}"]`);
+      } else {
+        const badge = document.querySelector(`.block-badge[data-comment-id="${c.id}"]`);
+        target = badge ? badge.parentElement : null;
       }
-      return;
+      if (!target) {
+        const section = document.getElementById(c.sectionId);
+        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('active');
+      setTimeout(() => target.classList.remove('active'), 1500);
     }
-    const item = e.target.closest('.comment-item');
-    if (item) {
-      const c = comments.find(x => x.id === item.dataset.commentId);
-      if (c) jumpToComment(c);
-    }
-  });
-
-  function jumpToComment(c) {
-    let target = null;
-    if (c.kind === 'selection') {
-      target = document.querySelector(`.commented[data-comment-id="${c.id}"]`);
-    } else {
-      const badge = document.querySelector(`.block-badge[data-comment-id="${c.id}"]`);
-      target = badge ? badge.parentElement : null;
-    }
-    if (!target) {
-      const section = document.getElementById(c.sectionId);
-      if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      return;
-    }
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    target.classList.add('active');
-    setTimeout(() => target.classList.remove('active'), 1500);
   }
 
-  document.getElementById('btn-toggle-sidebar').addEventListener('click', () => {
-    document.body.classList.toggle('sidebar-open');
-  });
-
-  // Clicking on a highlighted span or a block-comment badge opens the sidebar
-  // and scrolls to the matching comment.
-  document.addEventListener('click', (e) => {
-    const span = e.target.closest('.commented');
-    const badge = e.target.closest('.block-badge');
-    const id = (span && span.dataset.commentId) || (badge && badge.dataset.commentId);
-    if (!id) return;
-    document.body.classList.add('sidebar-open');
-    const item = document.querySelector(`.comment-item[data-comment-id="${id}"]`);
-    if (item) {
-      item.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      item.style.borderColor = 'var(--accent)';
-      setTimeout(() => { item.style.borderColor = ''; }, 1500);
+  // ---------- ScholiaApp — the orchestrator / composition root ----------
+  class ScholiaApp {
+    constructor() {
+      this.pending = null;                  // selection/block context being commented on
+      this.$toolbar = document.getElementById('selection-toolbar');
+      this.$compose = document.getElementById('compose');
+      this.$composeQuote = document.getElementById('compose-quote');
+      this.$composeText = document.getElementById('compose-text');
     }
-  });
-
-  function buildCommentsBlock() {
-    const sentinel = '<!-- scholia:revision v1 -->';
-    const header = 'The comments below are anchored feedback on `' + FILENAME + '`. Please revise the document to address each comment, then regenerate the commentable HTML (same filename).';
-    const lines = [sentinel, header, '', `## Comments on ${FILENAME}`, ''];
-    comments.forEach((c, i) => {
-      const tag = c.kind === 'block' ? 'Line' : 'Span';
-      lines.push(`[#${i+1} — ${tag} in section: "${c.sectionTitle}"]`);
-      lines.push(`> "${c.quote}"`);
-      lines.push(`Comment: ${c.comment}`);
-      lines.push('');
-    });
-    return lines.join('\n');
+    init() {
+      const main = document.querySelector('main');
+      this.doc = new DocModel(main);          // capture the doc BEFORE decoration mutates it
+      this.doc.splitCodeLines();
+      this.decorateCommentableBlocks();
+      this.store = new CommentStore(FILENAME, this.doc);
+      this.sidebar = new SidebarView(this.store, this.doc, {
+        onChange: () => this.refresh(),
+        onEdit: (c) => this.openEditCompose(c),
+      });
+      this.marks = new DocDecorator(main, this.store, this.doc);
+      this.bindCompose();
+      this.bindSelection();
+      this.bindHeader();
+      this.bindGlobalClick();
+      this.refresh();
+    }
+    refresh() {
+      this.marks.decorate();
+      this.sidebar.render();
+    }
+    decorateCommentableBlocks() {
+      document.querySelectorAll(COMMENTABLE_SELECTOR).forEach(el => {
+        if (isExcluded(el)) return;
+        if (el.dataset.decorated) return;
+        el.classList.add('commentable');
+        el.dataset.decorated = '1';
+        const btn = document.createElement('button');
+        btn.className = 'add-line-comment';
+        btn.type = 'button';
+        btn.textContent = '+';
+        btn.title = 'Comment on this line';
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const ctx = this.doc.sectionContext(el);
+          this.pending = {
+            kind: 'block',
+            blockId: this.doc.deriveBlockId(el),
+            quote: el.textContent.trim().slice(0, 300),
+            sectionId: ctx.sectionId,
+            sectionTitle: ctx.sectionTitle,
+            element: el,
+          };
+          this.openCompose(el.getBoundingClientRect(), this.pending.quote, '');
+        });
+        el.appendChild(btn);
+      });
+    }
+    openCompose(rect, quoteText, initialText) {
+      this.$composeQuote.textContent = '"' + quoteText + '"';
+      this.$composeText.value = initialText || '';
+      this.$compose.dataset.editId = '';
+      const top = window.scrollY + rect.top + rect.height + 8;
+      const left = Math.min(window.scrollX + rect.left, window.innerWidth - 360);
+      this.$compose.style.top = top + 'px';
+      this.$compose.style.left = Math.max(8, left) + 'px';
+      this.$compose.style.display = 'block';
+      this.$toolbar.style.display = 'none';
+      setTimeout(() => this.$composeText.focus(), 0);
+    }
+    openEditCompose(c) {
+      const target = c.kind === 'block'
+        ? document.querySelector(`.block-badge[data-comment-id="${c.id}"]`)?.parentElement
+        : document.querySelector(`.commented[data-comment-id="${c.id}"]`);
+      const rect = target ? target.getBoundingClientRect() : { top: 100, left: 100, height: 20, width: 200 };
+      this.pending = null;
+      this.$compose.dataset.editId = c.id;
+      this.$composeQuote.textContent = '"' + c.quote + '"';
+      this.$composeText.value = c.comment;
+      this.$compose.style.top = (window.scrollY + rect.top + rect.height + 8) + 'px';
+      this.$compose.style.left = Math.max(8, Math.min(window.scrollX + rect.left, window.innerWidth - 360)) + 'px';
+      this.$compose.style.display = 'block';
+      setTimeout(() => this.$composeText.focus(), 0);
+    }
+    bindCompose() {
+      document.getElementById('compose-cancel').addEventListener('click', () => {
+        this.$compose.style.display = 'none';
+        this.pending = null;
+      });
+      document.getElementById('compose-save').addEventListener('click', () => {
+        const text = this.$composeText.value.trim();
+        if (!text) return;
+        const editId = this.$compose.dataset.editId;
+        if (editId) {
+          const c = this.store.find(editId);
+          if (c) c.comment = text;
+          this.store.save();
+        } else if (this.pending) {
+          const props = {
+            id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6),
+            kind: this.pending.kind,
+            sectionId: this.pending.sectionId,
+            sectionTitle: this.pending.sectionTitle,
+            quote: this.pending.quote,
+            comment: text,
+            createdAt: new Date().toISOString(),
+          };
+          if (this.pending.kind === 'block') props.blockId = this.pending.blockId;
+          else if (this.pending.kind === 'selection') props.occurrence = this.pending.occurrence;
+          this.store.add(new Comment(props));
+        }
+        this.refresh();
+        this.$compose.style.display = 'none';
+        this.pending = null;
+        try { window.getSelection().removeAllRanges(); } catch(e) {}
+      });
+    }
+    bindSelection() {
+      document.addEventListener('mouseup', (e) => {
+        if (this.$compose.contains(e.target)) return;
+        setTimeout(() => {
+          const sel = window.getSelection();
+          if (!sel || sel.isCollapsed) { this.$toolbar.style.display = 'none'; return; }
+          const text = sel.toString().trim();
+          if (!text || text.length < 2) { this.$toolbar.style.display = 'none'; return; }
+          const range = sel.getRangeAt(0);
+          const main = this.doc.mainEl;
+          if (!main.contains(range.startContainer) || !main.contains(range.endContainer)) {
+            this.$toolbar.style.display = 'none'; return;
+          }
+          const ctx = this.doc.sectionContext(range.startContainer);
+          this.pending = {
+            kind: 'selection',
+            sectionId: ctx.sectionId,
+            sectionTitle: ctx.sectionTitle,
+            quote: text,
+            occurrence: this.doc.getOccurrenceInMain(range),
+          };
+          const rect = range.getBoundingClientRect();
+          this.$toolbar.style.top = (window.scrollY + rect.top - 36) + 'px';
+          this.$toolbar.style.left = Math.max(8, window.scrollX + rect.left + rect.width / 2 - 70) + 'px';
+          this.$toolbar.style.display = 'block';
+        }, 10);
+      });
+      document.addEventListener('mousedown', (e) => {
+        if (!this.$toolbar.contains(e.target) && !this.$compose.contains(e.target)) {
+          this.$toolbar.style.display = 'none';
+        }
+      });
+      document.getElementById('btn-add-comment').addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!this.pending || this.pending.kind !== 'selection') return;
+        const sel = window.getSelection();
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        this.openCompose(rect, this.pending.quote, '');
+      });
+    }
+    bindHeader() {
+      document.getElementById('btn-toggle-sidebar').addEventListener('click', () => {
+        document.body.classList.toggle('sidebar-open');
+      });
+      document.getElementById('btn-copy').addEventListener('click', async () => {
+        if (!this.store.comments.length) { alert('No comments to copy.'); return; }
+        const text = this.store.buildCommentsBlock();
+        try {
+          await navigator.clipboard.writeText(text);
+          const btn = document.getElementById('btn-copy');
+          const orig = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => btn.textContent = orig, 1500);
+        } catch (e) {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          alert('Comments copied to clipboard.');
+        }
+      });
+      document.getElementById('btn-clear').addEventListener('click', () => {
+        if (!this.store.comments.length) return;
+        if (!confirm(`Delete all ${this.store.comments.length} comments?`)) return;
+        this.store.clear();
+        this.refresh();
+      });
+    }
+    bindGlobalClick() {
+      document.addEventListener('click', (e) => {
+        const span = e.target.closest('.commented');
+        const badge = e.target.closest('.block-badge');
+        const id = (span && span.dataset.commentId) || (badge && badge.dataset.commentId);
+        if (!id) return;
+        document.body.classList.add('sidebar-open');
+        const item = document.querySelector(`.comment-item[data-comment-id="${id}"]`);
+        if (item) {
+          item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          item.style.borderColor = 'var(--accent)';
+          setTimeout(() => { item.style.borderColor = ''; }, 1500);
+        }
+      });
+    }
   }
 
-  document.getElementById('btn-copy').addEventListener('click', async () => {
-    if (!comments.length) { alert('No comments to copy.'); return; }
-    const text = buildCommentsBlock();
-    try {
-      await navigator.clipboard.writeText(text);
-      const btn = document.getElementById('btn-copy');
-      const orig = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(() => btn.textContent = orig, 1500);
-    } catch (e) {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      alert('Comments copied to clipboard.');
-    }
-  });
-
-  document.getElementById('btn-clear').addEventListener('click', () => {
-    if (!comments.length) return;
-    if (!confirm(`Delete all ${comments.length} comments?`)) return;
-    comments = [];
-    save(); render();
-  });
-
-  function render() {
-    clearSelectionHighlights();
-    clearBlockBadges();
-    applySelectionHighlights();
-    applyBlockBadges();
-    renderSidebar();
-  }
-
-  // Init
-  splitCodeLines();
-  decorateCommentableBlocks();
-  render();
+  new ScholiaApp().init();
 })();
 </script>
 </body>
