@@ -120,6 +120,19 @@
   #compose button { font-family: inherit; font-size: 13px; padding: 4px 12px; border: 1px solid var(--rule); background: var(--panel); border-radius: 4px; cursor: pointer; }
   #compose button.primary { background: var(--accent); color: white; border-color: var(--accent); }
 
+  /* Toast — transient messages (replaces native alert) */
+  #scholia-toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(12px); background: var(--ink); color: #fff; font-size: 13px; line-height: 1.4; padding: 10px 16px; border-radius: 6px; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity 0.18s ease, transform 0.18s ease; z-index: 400; max-width: 80vw; }
+  #scholia-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* Confirm dialog — destructive actions (replaces native confirm) */
+  #scholia-confirm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.28); display: none; align-items: center; justify-content: center; z-index: 500; }
+  #scholia-confirm-backdrop.show { display: flex; }
+  #scholia-confirm { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 20px; width: 360px; max-width: 90vw; box-shadow: var(--shadow); }
+  #scholia-confirm p { margin: 0 0 16px; font-size: 14px; line-height: 1.45; color: var(--ink); }
+  #scholia-confirm .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  #scholia-confirm button { font-family: inherit; font-size: 13px; padding: 6px 14px; border: 1px solid var(--rule); background: var(--panel); border-radius: 4px; cursor: pointer; color: var(--ink); }
+  #scholia-confirm button.danger { background: #b23a2e; color: #fff; border-color: #b23a2e; }
+
   /* Sidebar */
   aside.sidebar { position: fixed; top: 44px; right: 0; bottom: 0; width: 360px; background: var(--panel); border-left: 1px solid var(--rule); overflow-y: auto; padding: 20px; display: none; }
   body.sidebar-open aside.sidebar { display: block; }
@@ -206,6 +219,17 @@
   </div>
 </div>
 
+<div id="scholia-toast" role="status" aria-live="polite"></div>
+<div id="scholia-confirm-backdrop">
+  <div id="scholia-confirm" role="alertdialog" aria-modal="true">
+    <p id="scholia-confirm-msg"></p>
+    <div class="actions">
+      <button id="scholia-confirm-cancel">Cancel</button>
+      <button id="scholia-confirm-ok" class="danger">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <script>
 (function() {
   // ---------- Module constants + helpers ----------
@@ -219,6 +243,38 @@
     return !!el.closest('nav.toc, aside, header, #compose, #selection-toolbar');
   }
   const BUTTON_LABELS = { resolve: 'Resolve', reopen: 'Reopen', jump: 'Jump', edit: 'Edit', delete: 'Delete' };
+
+  // In-template replacements for native alert()/confirm() so messaging stays inside
+  // the document's own styling (and never pops an OS "This page says" dialog).
+  const TOAST_DURATION_MS = 2600;   // how long a toast stays visible before it fades out
+  let toastTimer = null;
+  function showToast(message) {
+    const el = document.getElementById('scholia-toast');
+    if (!el) return;
+    el.textContent = message;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), TOAST_DURATION_MS);
+  }
+  function confirmDialog(message, onConfirm, okLabel) {
+    const backdrop = document.getElementById('scholia-confirm-backdrop');
+    // Dialog markup missing (shouldn't happen) — degrade to running the action
+    // rather than dead-ending the user with a button that does nothing.
+    if (!backdrop) { if (onConfirm) onConfirm(); return; }
+    const okBtn = document.getElementById('scholia-confirm-ok');
+    const cancelBtn = document.getElementById('scholia-confirm-cancel');
+    document.getElementById('scholia-confirm-msg').textContent = message;
+    okBtn.textContent = okLabel || 'Confirm';
+    const close = () => {
+      backdrop.classList.remove('show');
+      okBtn.onclick = cancelBtn.onclick = backdrop.onclick = null;
+    };
+    okBtn.onclick = () => { close(); onConfirm(); };
+    cancelBtn.onclick = close;
+    backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+    backdrop.classList.add('show');
+    okBtn.focus();
+  }
 
   // ---------- Comment — one comment's data ----------
   class Comment {
@@ -473,7 +529,7 @@
         localStorage.setItem(this.storageKey, JSON.stringify(this.comments));
       } catch(e) {
         console.error('scholia: failed to save comments', e);
-        try { alert('Could not save comments — browser storage may be full. Your latest change may not have persisted.'); } catch(_) {}
+        showToast('Could not save — browser storage may be full. Your latest change may not have persisted.');
       }
     }
     add(comment) {
@@ -906,7 +962,7 @@
         document.body.classList.toggle('sidebar-open');
       });
       document.getElementById('btn-copy').addEventListener('click', async () => {
-        if (!this.store.openSet().length) { alert('No open comments to copy.'); return; }
+        if (!this.store.openSet().length) { showToast('No open comments to copy.'); return; }
         const text = this.store.buildCommentsBlock();
         try {
           await navigator.clipboard.writeText(text);
@@ -921,14 +977,17 @@
           ta.select();
           document.execCommand('copy');
           document.body.removeChild(ta);
-          alert('Comments copied to clipboard.');
+          showToast('Comments copied.');
         }
       });
       document.getElementById('btn-clear').addEventListener('click', () => {
-        if (!this.store.comments.length) return;
-        if (!confirm(`Delete all ${this.store.comments.length} comments?`)) return;
-        this.store.clear();
-        this.refresh();
+        const total = this.store.comments.length;
+        if (!total) return;
+        confirmDialog(
+          `Delete all ${total} comments? This removes new, carried-over, and resolved comments.`,
+          () => { this.store.clear(); this.refresh(); },
+          'Delete all'
+        );
       });
     }
     bindGlobalClick() {
