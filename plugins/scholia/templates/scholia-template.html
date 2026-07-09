@@ -817,37 +817,49 @@
       setTimeout(() => this.$composeText.focus(), 0);
     }
     bindCompose() {
-      document.getElementById('compose-cancel').addEventListener('click', () => {
-        this.$compose.style.display = 'none';
-        this.pending = null;
-      });
-      document.getElementById('compose-save').addEventListener('click', () => {
-        const text = this.$composeText.value.trim();
-        if (!text) return;
-        const editId = this.$compose.dataset.editId;
-        if (editId) {
-          const c = this.store.find(editId);
-          if (c) c.comment = text;
-          this.store.save();
-        } else if (this.pending) {
-          const props = {
-            id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6),
-            kind: this.pending.kind,
-            sectionId: this.pending.sectionId,
-            sectionTitle: this.pending.sectionTitle,
-            quote: this.pending.quote,
-            comment: text,
-            createdAt: new Date().toISOString(),
-          };
-          if (this.pending.kind === 'block') props.blockId = this.pending.blockId;
-          else if (this.pending.kind === 'selection') props.occurrence = this.pending.occurrence;
-          this.store.add(new Comment(props));
+      document.getElementById('compose-cancel').addEventListener('click', () => this.cancelCompose());
+      document.getElementById('compose-save').addEventListener('click', () => this.saveCompose());
+      // Keyboard shortcuts inside the textarea: Cmd/Ctrl+Enter saves, Esc cancels.
+      this.$composeText.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          this.saveCompose();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          this.cancelCompose();
         }
-        this.refresh();
-        this.$compose.style.display = 'none';
-        this.pending = null;
-        try { window.getSelection().removeAllRanges(); } catch(e) {}
       });
+    }
+    cancelCompose() {
+      this.$compose.style.display = 'none';
+      this.pending = null;
+    }
+    saveCompose() {
+      const text = this.$composeText.value.trim();
+      if (!text) return;
+      const editId = this.$compose.dataset.editId;
+      if (editId) {
+        const c = this.store.find(editId);
+        if (c) c.comment = text;
+        this.store.save();
+      } else if (this.pending) {
+        const props = {
+          id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6),
+          kind: this.pending.kind,
+          sectionId: this.pending.sectionId,
+          sectionTitle: this.pending.sectionTitle,
+          quote: this.pending.quote,
+          comment: text,
+          createdAt: new Date().toISOString(),
+        };
+        if (this.pending.kind === 'block') props.blockId = this.pending.blockId;
+        else if (this.pending.kind === 'selection') props.occurrence = this.pending.occurrence;
+        this.store.add(new Comment(props));
+      }
+      this.refresh();
+      this.$compose.style.display = 'none';
+      this.pending = null;
+      try { window.getSelection().removeAllRanges(); } catch(e) {}
     }
     bindSelection() {
       document.addEventListener('mouseup', (e) => {
