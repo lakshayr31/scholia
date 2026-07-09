@@ -443,6 +443,16 @@
         }
       };
     }
+    // Authored text of a single element, excluding injected decoration (the gutter
+    // "+", block badges, markers). Used for the LINE-comment quote so it never picks
+    // up the "+" the gutter button appends to the block's textContent.
+    elementAcceptedText(el) {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, DocModel.acceptedTextFilter());
+      let out = '';
+      let node;
+      while ((node = walker.nextNode())) out += node.nodeValue;
+      return out.trim();
+    }
     // Walk the accepted text nodes and build a single normalized search string plus a
     // reverse map from each normalized char index back to its raw origin. The
     // whitespace-run collapse carries ACROSS node boundaries (inWhitespaceRun), so the
@@ -987,7 +997,7 @@
           this.pending = {
             kind: 'block',
             blockId: this.doc.deriveBlockId(el),
-            quote: el.textContent.trim().slice(0, 300),
+            quote: this.doc.elementAcceptedText(el).slice(0, 300),
             sectionId: ctx.sectionId,
             sectionTitle: ctx.sectionTitle,
             element: el,
