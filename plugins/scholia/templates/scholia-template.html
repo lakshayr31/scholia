@@ -355,10 +355,12 @@
       } else {
         // Re-anchor in the SAME normalized, cross-node text space the quote's
         // occurrence was counted against at create time (see getOccurrenceInMain)
-        // and the highlighter searches (see DocDecorator.highlightNthOccurrence).
-        // Normalizing both sides lets a quote that spans several elements — whose
-        // source has newlines+indentation between blocks but whose selection renders
-        // as single spaces — still match.
+        // and the highlighter searches (see DocDecorator.applySelectionHighlights).
+        // At load time no .commented spans exist yet, so this space matches the one
+        // the highlighter builds after clearSelectionHighlights() — anchor and
+        // highlight therefore agree. Normalizing both sides lets a quote that spans
+        // several elements — whose source has newlines+indentation between blocks but
+        // whose selection renders as single spaces — still match.
         const needle = DocModel.normalizeText(comment.quote);
         const { normalized } = this.buildNormalizedIndex();
         matched = DocModel.countOccurrences(normalized, needle) >= comment.occurrence;
@@ -494,8 +496,30 @@
       }
       return map.length;
     }
+    // Extract the text a Range covers, restricted to the SAME accepted text nodes
+    // buildNormalizedIndex walks — the gutter "+", block badges, markers, and app
+    // chrome are filtered out. Using window.getSelection().toString() here would fold
+    // the gutter "+" (and badge digits) into the quote; since the matcher's search space
+    // excludes those characters, the contaminated quote would never be found and the
+    // comment would render no highlight (Bug A). Raw characters are preserved —
+    // including the newline+indent between blocks that the matcher collapses to a
+    // joining space — so normalizeText() lands both the quote and the haystack on the
+    // same canonical form. Only the ends are trimmed.
+    rangeAcceptedText(range) {
+      const walker = document.createTreeWalker(this.mainEl, NodeFilter.SHOW_TEXT, DocModel.acceptedTextFilter());
+      let out = '';
+      let node;
+      while ((node = walker.nextNode())) {
+        if (!range.intersectsNode(node)) continue;
+        const value = node.nodeValue;
+        const from = (node === range.startContainer) ? range.startOffset : 0;
+        const to = (node === range.endContainer) ? range.endOffset : value.length;
+        out += value.slice(from, to);
+      }
+      return out.trim();
+    }
     getOccurrenceInMain(range) {
-      const needle = DocModel.normalizeText(range.toString());
+      const needle = DocModel.normalizeText(this.rangeAcceptedText(range));
       if (!needle) return -1;
       const { normalized, map, nodeOrdinals } = this.buildNormalizedIndex();
       const startIndex = this.normalizedIndexAt(range.startContainer, range.startOffset, map, nodeOrdinals);
@@ -705,33 +729,49 @@
     }
     applySelectionHighlights() {
       const hash = this.docModel.hash;
+      // Build the normalized search space ONCE for the whole pass. decorate() calls
+      // clearSelectionHighlights() first, so no .commented spans exist yet and the
+      // haystack is the full, decoration-excluded document text. Locating every comment
+      // against this single stable index — instead of rebuilding it per comment as each
+      // wrap removes earlier .commented text — keeps occurrence numbers meaning what
+      // they meant at create time, so duplicate quotes and post-clearResolved reloads
+      // anchor to the right instance (Bug B).
+      const { normalized, map } = this.docModel.buildNormalizedIndex();
+      const matches = [];
       this.store.comments.forEach((c, i) => {
         if (c.kind !== 'selection') return;
-        if (c.detached) return;               // no highlight for detached comments
-        const extra = c.resolved ? ['resolved'] : (c.status(hash) === 'carried-over' ? ['carried'] : []);
-        this.highlightNthOccurrence(c.quote, c.occurrence, c.id, i + 1, extra);
+        const needle = DocModel.normalizeText(c.quote);
+        const matchStart = needle ? DocDecorator.findNthOccurrenceStart(normalized, needle, c.occurrence) : -1;
+        if (matchStart === -1) {
+          c.detached = true;                  // not locatable → show detached in the sidebar, don't silently vanish
+          return;
+        }
+        c.detached = false;
+        const extraClasses = c.resolved ? ['resolved'] : (c.status(hash) === 'carried-over' ? ['carried'] : []);
+        matches.push({ id: c.id, markerNumber: i + 1, matchStart, matchEnd: matchStart + needle.length, extraClasses });
       });
+      // Apply wraps LAST match first. Wrapping splits a text node and shifts the offsets
+      // of everything after the wrap point; going back-to-front leaves every
+      // not-yet-applied match's (node, offset) entries in `map` still valid — an earlier
+      // match always sits in the retained "before" text of a later wrap.
+      matches.sort((a, b) => b.matchStart - a.matchStart);
+      matches.forEach(m => this.wrapNormalizedRange(map, m.matchStart, m.matchEnd, m.id, m.extraClasses, m.markerNumber));
     }
-    // Highlight the nth occurrence of `text`, spanning however many elements it covers.
-    // Works cross-node: the quote is normalized and located in the doc's normalized
-    // text space (via DocModel.buildNormalizedIndex), then the matched normalized range
-    // is mapped back to raw text-node slices and each slice is wrapped in its own
-    // .commented span. All segments share `commentId`; the numbered .marker badge is
-    // placed on the FIRST wrapped segment only. Returns true if any segment was wrapped.
-    highlightNthOccurrence(text, n, commentId, index, extraClasses) {
-      const needle = DocModel.normalizeText(text);
-      if (!needle) return false;
-      const { normalized, map } = this.docModel.buildNormalizedIndex();
-      // Locate the START of the nth occurrence in the normalized text space.
-      let occurrence = 0, idx = -1, matchStart = -1;
+    // Return the normalized-space start index of the nth occurrence of `needle`, or -1.
+    static findNthOccurrenceStart(normalized, needle, n) {
+      let occurrence = 0, idx = -1;
       while ((idx = normalized.indexOf(needle, idx + 1)) !== -1) {
         occurrence++;
-        if (occurrence === n) { matchStart = idx; break; }
+        if (occurrence === n) return idx;
       }
-      if (matchStart === -1) return false;                 // not found → caller leaves the comment detached in the sidebar
-      const matchEnd = matchStart + needle.length;         // exclusive, normalized space
-      // Group the matched normalized range into one raw slice per text node it covers.
-      // Node order is monotonic across the map, so each node forms one contiguous run.
+      return -1;
+    }
+    // Wrap the normalized range [matchStart, matchEnd) — mapped back to raw text-node
+    // slices via `map` — in .commented spans, one per covered node. Node order is
+    // monotonic across the map, so each node forms one contiguous run. The numbered
+    // .marker badge is placed on the FIRST non-whitespace segment only; pure-whitespace
+    // boundary slices (e.g. the newline+indent joining two blocks) are skipped.
+    wrapNormalizedRange(map, matchStart, matchEnd, commentId, extraClasses, markerIndex) {
       const segments = [];
       let i = matchStart;
       while (i < matchEnd) {
@@ -742,20 +782,15 @@
           lastOffset = map[i].offset;
           i++;
         }
-        segments.push({ node, from, to: lastOffset + 1 });
+        segments.push({ node, from, to: lastOffset + 1 });  // map offsets are inclusive; slice end is exclusive
       }
       let markerPlaced = false;
-      let anyWrapped = false;
       segments.forEach(seg => {
         const slice = seg.node.nodeValue.slice(seg.from, seg.to);
-        // Skip pure-whitespace boundary slices — e.g. the newline+indent text node
-        // between two blocks contributes the joining space but has nothing to highlight.
         if (!slice.trim()) return;
-        this.wrapNodeSlice(seg.node, seg.from, seg.to, commentId, extraClasses, markerPlaced ? null : index);
+        this.wrapNodeSlice(seg.node, seg.from, seg.to, commentId, extraClasses, markerPlaced ? null : markerIndex);
         markerPlaced = true;
-        anyWrapped = true;
       });
-      return anyWrapped;
     }
     // Wrap raw offsets [from, to) of a single text node in a .commented span, keeping
     // the un-matched head/tail as sibling text nodes. `markerIndex` is null for every
@@ -1039,13 +1074,16 @@
         setTimeout(() => {
           const sel = window.getSelection();
           if (!sel || sel.isCollapsed) { this.$toolbar.style.display = 'none'; return; }
-          const text = sel.toString().trim();
-          if (!text || text.length < 2) { this.$toolbar.style.display = 'none'; return; }
           const range = sel.getRangeAt(0);
           const main = this.doc.mainEl;
           if (!main.contains(range.startContainer) || !main.contains(range.endContainer)) {
             this.$toolbar.style.display = 'none'; return;
           }
+          // Capture the quote from the accepted-node text space (excludes the gutter
+          // "+" and badge digits) — NOT sel.toString(), which folds that chrome into a
+          // cross-block / block-end selection and breaks matching (Bug A).
+          const text = this.doc.rangeAcceptedText(range);
+          if (!text || text.length < 2) { this.$toolbar.style.display = 'none'; return; }
           const ctx = this.doc.sectionContext(range.startContainer);
           this.pending = {
             kind: 'selection',
