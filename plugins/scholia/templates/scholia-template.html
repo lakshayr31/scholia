@@ -242,6 +242,12 @@
   function isExcluded(el) {
     return !!el.closest('nav.toc, aside, header, #compose, #selection-toolbar');
   }
+  // ASCII whitespace only (space, tab, CR/LF, form-feed, vertical-tab) — the same
+  // set collapsed by DocModel.normalizeText's regex. Deliberately excludes Unicode
+  // spaces like U+00A0 (&nbsp;), which are meaningful content and must not collapse.
+  function isAsciiWhitespace(ch) {
+    return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v';
+  }
   const BUTTON_LABELS = { resolve: 'Resolve', reopen: 'Reopen', jump: 'Jump', edit: 'Edit', delete: 'Delete' };
 
   // In-template replacements for native alert()/confirm() so messaging stays inside
@@ -347,7 +353,15 @@
       if (comment.kind === 'block') {
         matched = !!this.findBlockElement(comment.blockId);
       } else {
-        matched = DocModel.countOccurrences(this.pristineText, comment.quote) >= comment.occurrence;
+        // Re-anchor in the SAME normalized, cross-node text space the quote's
+        // occurrence was counted against at create time (see getOccurrenceInMain)
+        // and the highlighter searches (see DocDecorator.highlightNthOccurrence).
+        // Normalizing both sides lets a quote that spans several elements — whose
+        // source has newlines+indentation between blocks but whose selection renders
+        // as single spaces — still match.
+        const needle = DocModel.normalizeText(comment.quote);
+        const { normalized } = this.buildNormalizedIndex();
+        matched = DocModel.countOccurrences(normalized, needle) >= comment.occurrence;
       }
       comment.detached = !matched;
       return matched;
@@ -407,36 +421,88 @@
       }
       return null;
     }
-    getOccurrenceInMain(range) {
-      const main = this.mainEl;
-      const text = range.toString();
-      if (!text) return -1;
-      // Count in the SAME coordinate space anchor() re-anchors against: the authored
-      // text with injected decorations (gutter "+", block badges, selection markers)
-      // excluded — the same node set the highlight walker accepts (see
-      // DocDecorator.wrapNthOccurrenceInMain). Counting against the live, decorated
-      // main.textContent would fold badge/marker digits into the tally, so a short or
-      // numeric quote (e.g. "12") could store occurrence=2 at create yet fail
-      // countOccurrences(pristineText,"12") >= 2 at anchor and falsely detach.
-      const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
+    // Collapse each run of ASCII whitespace to a single space, then trim. Applied
+    // identically to the incoming quote and (via buildNormalizedIndex) to the search
+    // space, so a cross-block selection — source "…end.\n\n  Start…", rendered
+    // "…end. Start…" — normalizes to one canonical form on both sides and matches.
+    static normalizeText(s) {
+      return String(s).replace(/[ \t\n\r\f\v]+/g, ' ').trim();
+    }
+    // The one text-node filter shared by occurrence counting, re-anchoring, and
+    // highlighting so all three walk the SAME text space. Rejects injected
+    // decorations (gutter "+", block badges, markers, already-wrapped highlights)
+    // and app chrome, so counts never fold in non-authored characters.
+    static acceptedTextFilter() {
+      return {
         acceptNode: (node) => {
           if (!node.parentElement) return NodeFilter.FILTER_REJECT;
           if (node.parentElement.closest('.commented, script, style, .add-line-comment, .block-badge, #compose, #selection-toolbar, aside, header')) return NodeFilter.FILTER_REJECT;
           return NodeFilter.FILTER_ACCEPT;
         }
-      });
-      let pristineSpaceText = '';
-      let startOffset = -1;                   // selection start, mapped into the decoration-excluded space
+      };
+    }
+    // Walk the accepted text nodes and build a single normalized search string plus a
+    // reverse map from each normalized char index back to its raw origin. The
+    // whitespace-run collapse carries ACROSS node boundaries (inWhitespaceRun), so the
+    // newline+indent text node that sits between two blocks becomes the single space
+    // that joins them in the normalized string — which is what makes cross-node
+    // matches land.
+    // Returns { normalized, map, nodeOrdinals } where:
+    //   normalized   — the collapsed concatenation of all accepted text
+    //   map[i]       — { node, offset }: raw text node + offset that produced norm char i
+    //                  (for a collapsed whitespace run, points at the run's FIRST char)
+    //   nodeOrdinals — Map<textNode, docOrderIndex>, used by normalizedIndexAt to
+    //                  locate a selection start within the normalized string
+    buildNormalizedIndex() {
+      const walker = document.createTreeWalker(this.mainEl, NodeFilter.SHOW_TEXT, DocModel.acceptedTextFilter());
+      let normalized = '';
+      const map = [];
+      const nodeOrdinals = new Map();
+      let inWhitespaceRun = false;
+      let ordinal = 0;
       let node;
       while ((node = walker.nextNode())) {
-        if (node === range.startContainer) startOffset = pristineSpaceText.length + range.startOffset;
-        pristineSpaceText += node.nodeValue;
+        nodeOrdinals.set(node, ordinal++);
+        const value = node.nodeValue;
+        for (let k = 0; k < value.length; k++) {
+          if (isAsciiWhitespace(value[k])) {
+            if (inWhitespaceRun) continue;    // collapse — the space was already emitted at the run's start
+            normalized += ' ';
+            map.push({ node, offset: k });
+            inWhitespaceRun = true;
+          } else {
+            normalized += value[k];
+            map.push({ node, offset: k });
+            inWhitespaceRun = false;
+          }
+        }
       }
-      if (startOffset < 0) startOffset = 0;   // start not in accepted set → count from doc start
+      return { normalized, map, nodeOrdinals };
+    }
+    // Map a raw (textNode, offset) selection start into the normalized string's index
+    // space, so occurrence counting can start from the selected instance. Precise only
+    // when the container is one of the accepted text nodes; any other container
+    // (element boundary, excluded node) falls back to 0 → count from doc start, which
+    // mirrors the pre-normalization behavior.
+    normalizedIndexAt(container, rawOffset, map, nodeOrdinals) {
+      if (!nodeOrdinals.has(container)) return 0;
+      const targetOrdinal = nodeOrdinals.get(container);
+      for (let i = 0; i < map.length; i++) {
+        const entryOrdinal = nodeOrdinals.get(map[i].node);
+        if (entryOrdinal > targetOrdinal) return i;               // passed the container without a hit → first char after it
+        if (entryOrdinal === targetOrdinal && map[i].offset >= rawOffset) return i;
+      }
+      return map.length;
+    }
+    getOccurrenceInMain(range) {
+      const needle = DocModel.normalizeText(range.toString());
+      if (!needle) return -1;
+      const { normalized, map, nodeOrdinals } = this.buildNormalizedIndex();
+      const startIndex = this.normalizedIndexAt(range.startContainer, range.startOffset, map, nodeOrdinals);
       let occurrence = 0, idx = -1;
-      while ((idx = pristineSpaceText.indexOf(text, idx + 1)) !== -1) {
+      while ((idx = normalized.indexOf(needle, idx + 1)) !== -1) {
         occurrence++;
-        if (idx >= startOffset) return occurrence;
+        if (idx >= startIndex) return occurrence;    // first instance at/after the selection start = the one selected
       }
       return occurrence;
     }
@@ -545,6 +611,12 @@
       this.comments = [];
       this.save();
     }
+    // Bulk-delete every resolved comment, leaving open ones untouched. Backs the
+    // "Clear resolved (N)" button on the Resolved tab.
+    clearResolved() {
+      this.comments = this.comments.filter(c => c.isOpen());
+      this.save();
+    }
     find(id) {
       return this.comments.find(c => c.id === id) || null;
     }
@@ -637,46 +709,78 @@
         if (c.kind !== 'selection') return;
         if (c.detached) return;               // no highlight for detached comments
         const extra = c.resolved ? ['resolved'] : (c.status(hash) === 'carried-over' ? ['carried'] : []);
-        this.wrapNthOccurrenceInMain(c.quote, c.occurrence, c.id, i + 1, extra);
+        this.highlightNthOccurrence(c.quote, c.occurrence, c.id, i + 1, extra);
       });
     }
-    wrapNthOccurrenceInMain(text, n, commentId, index, extraClasses) {
-      const main = this.mainEl;
-      const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
-        acceptNode: (node) => {
-          if (!node.parentElement) return NodeFilter.FILTER_REJECT;
-          if (node.parentElement.closest('.commented, script, style, .add-line-comment, .block-badge, #compose, #selection-toolbar, aside, header')) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      });
-      let count = 0, node;
-      while ((node = walker.nextNode())) {
-        let from = 0, pos;
-        while ((pos = node.nodeValue.indexOf(text, from)) !== -1) {
-          count++;
-          if (count === n) {
-            const before = node.nodeValue.slice(0, pos);
-            const match = node.nodeValue.slice(pos, pos + text.length);
-            const after = node.nodeValue.slice(pos + text.length);
-            const span = document.createElement('span');
-            span.className = 'commented';
-            if (extraClasses && extraClasses.length) span.classList.add(...extraClasses);
-            span.dataset.commentId = commentId;
-            span.appendChild(document.createTextNode(match));
-            const marker = document.createElement('span');
-            marker.className = 'marker';
-            marker.textContent = index;
-            span.appendChild(marker);
-            const afterNode = document.createTextNode(after);
-            node.nodeValue = before;
-            node.parentNode.insertBefore(span, node.nextSibling);
-            node.parentNode.insertBefore(afterNode, span.nextSibling);
-            return true;
-          }
-          from = pos + text.length;
-        }
+    // Highlight the nth occurrence of `text`, spanning however many elements it covers.
+    // Works cross-node: the quote is normalized and located in the doc's normalized
+    // text space (via DocModel.buildNormalizedIndex), then the matched normalized range
+    // is mapped back to raw text-node slices and each slice is wrapped in its own
+    // .commented span. All segments share `commentId`; the numbered .marker badge is
+    // placed on the FIRST wrapped segment only. Returns true if any segment was wrapped.
+    highlightNthOccurrence(text, n, commentId, index, extraClasses) {
+      const needle = DocModel.normalizeText(text);
+      if (!needle) return false;
+      const { normalized, map } = this.docModel.buildNormalizedIndex();
+      // Locate the START of the nth occurrence in the normalized text space.
+      let occurrence = 0, idx = -1, matchStart = -1;
+      while ((idx = normalized.indexOf(needle, idx + 1)) !== -1) {
+        occurrence++;
+        if (occurrence === n) { matchStart = idx; break; }
       }
-      return false;
+      if (matchStart === -1) return false;                 // not found → caller leaves the comment detached in the sidebar
+      const matchEnd = matchStart + needle.length;         // exclusive, normalized space
+      // Group the matched normalized range into one raw slice per text node it covers.
+      // Node order is monotonic across the map, so each node forms one contiguous run.
+      const segments = [];
+      let i = matchStart;
+      while (i < matchEnd) {
+        const node = map[i].node;
+        const from = map[i].offset;
+        let lastOffset = from;
+        while (i < matchEnd && map[i].node === node) {
+          lastOffset = map[i].offset;
+          i++;
+        }
+        segments.push({ node, from, to: lastOffset + 1 });
+      }
+      let markerPlaced = false;
+      let anyWrapped = false;
+      segments.forEach(seg => {
+        const slice = seg.node.nodeValue.slice(seg.from, seg.to);
+        // Skip pure-whitespace boundary slices — e.g. the newline+indent text node
+        // between two blocks contributes the joining space but has nothing to highlight.
+        if (!slice.trim()) return;
+        this.wrapNodeSlice(seg.node, seg.from, seg.to, commentId, extraClasses, markerPlaced ? null : index);
+        markerPlaced = true;
+        anyWrapped = true;
+      });
+      return anyWrapped;
+    }
+    // Wrap raw offsets [from, to) of a single text node in a .commented span, keeping
+    // the un-matched head/tail as sibling text nodes. `markerIndex` is null for every
+    // segment except the first, so only one numbered badge is rendered per comment.
+    wrapNodeSlice(node, from, to, commentId, extraClasses, markerIndex) {
+      const raw = node.nodeValue;
+      const before = raw.slice(0, from);
+      const matched = raw.slice(from, to);
+      const after = raw.slice(to);
+      const span = document.createElement('span');
+      span.className = 'commented';
+      if (extraClasses && extraClasses.length) span.classList.add(...extraClasses);
+      span.dataset.commentId = commentId;
+      span.appendChild(document.createTextNode(matched));
+      if (markerIndex != null) {
+        const marker = document.createElement('span');
+        marker.className = 'marker';
+        marker.textContent = markerIndex;
+        span.appendChild(marker);
+      }
+      const parent = node.parentNode;
+      const afterNode = document.createTextNode(after);
+      node.nodeValue = before;
+      parent.insertBefore(span, node.nextSibling);
+      parent.insertBefore(afterNode, span.nextSibling);
     }
   }
 
@@ -706,6 +810,9 @@
       let html = '';
       if (this.activeTab === 'open' && carriedOpen.length > 0) {
         html += `<button class="resolve-all" data-action="resolve-all">Resolve all carried-over (${carriedOpen.length})</button>`;
+      }
+      if (this.activeTab === 'resolved' && resolvedList.length > 0) {
+        html += `<button class="resolve-all" data-action="clear-resolved">Clear resolved (${resolvedList.length})</button>`;
       }
       if (!list.length) {
         html += `<p class="empty">${this.activeTab === 'open' ? 'No open comments.' : 'Nothing resolved yet.'}</p>`;
@@ -752,6 +859,15 @@
           e.stopPropagation();
           const action = btn.dataset.action;
           if (action === 'resolve-all') { this.store.resolveAllOld(); this.actions.onChange(); return; }
+          if (action === 'clear-resolved') {
+            const n = this.store.resolvedSet().length;
+            confirmDialog(
+              `Delete all ${n} resolved comments? This cannot be undone.`,
+              () => { this.store.clearResolved(); this.actions.onChange(); },
+              'Delete all'
+            );
+            return;
+          }
           const id = btn.dataset.id;
           const c = this.store.find(id);
           if (!c) return;
