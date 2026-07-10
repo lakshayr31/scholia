@@ -1,15 +1,15 @@
 # scholia
 
-Render Claude Code's long-form output as self-contained, commentable HTML — then comment inline, copy, and paste the comments back to Claude to revise. Local-first, with zero runtime dependencies beyond a POSIX shell and a browser.
+Render Claude Code's long-form output as **self-contained, commentable HTML** — then **comment inline, copy, and paste the comments back to Claude to revise**. **Local-first**, with zero runtime dependencies beyond a POSIX shell and a browser.
 
 ## What it does
 
-When Claude is about to hand you a substantial document — a plan, report, research write-up, or comparison — scholia renders it as a single commentable HTML file in `./.claude-output/` and opens it in your browser. You leave anchored feedback by:
+When Claude is about to hand you a **substantial document** — a plan, report, research write-up, or comparison — scholia renders it as a **single commentable HTML file** in `./.claude-output/` and **opens it in your browser**. You leave anchored feedback by:
 
 - hovering any line and clicking the gutter `+` to comment on that whole line, or
 - selecting any span of text and clicking **+ Add comment**.
 
-Selecting text highlights every whole block it touches (line, paragraph, or list item) in yellow with a numbered badge; the gutter `+` comments a single line. Comments live in your browser (localStorage) and survive a reload. When you're done, click **Copy comments** (top right). That puts a self-instructing block on your clipboard: paste it back into any Claude chat and Claude revises the document and regenerates the HTML. No server, no account, no database.
+Selecting text **highlights every whole block it touches** (line, paragraph, or list item) in yellow with a numbered badge; the gutter `+` comments a single line. Comments **live in your browser** (localStorage) and survive a reload. When you're done, click **Copy comments** (top right). That puts a **self-instructing block** on your clipboard: paste it back into any Claude chat and Claude **revises the document and regenerates the HTML**. No server, no account, no database.
 
 Keyboard: **Cmd/Ctrl+Enter** saves a comment, **Esc** cancels.
 
@@ -34,7 +34,7 @@ Two commands inside Claude Code (replace `<owner>` with the GitHub owner or org 
 
 ## Use
 
-**Automatic.** Just ask Claude for something substantial — "write a plan for X", "research Y and compare the options". When the reply is a long, multi-section document, scholia renders and opens it for you. Short answers, snippets, and normal chat are left as plain text.
+**Automatic.** Just ask Claude for something substantial — "write a plan for X", "research Y and compare the options". When the reply is a long, multi-section document, scholia **renders and opens it for you**. Short answers, snippets, and normal chat are left as plain text.
 
 **Explicit.** Ask for it by name:
 
@@ -46,11 +46,11 @@ Plugin skills are namespaced `plugin:skill`; here both are `scholia`.
 
 ## The comment → paste → revise loop
 
-1. Claude generates the doc and opens it in your browser.
-2. Comment on lines (`+`) and spans (**+ Add comment**). Manage them in the right-hand sidebar — Jump, Edit, Delete.
+1. Claude **generates the doc and opens it** in your browser.
+2. **Comment** on lines (`+`) and spans (**+ Add comment**). Manage them in the right-hand sidebar — Jump, Edit, Delete.
 3. Click **Copy comments**.
-4. Paste the copied block back into chat. It begins with a one-line instruction, so Claude knows to revise and regenerate even in a fresh chat with no personal setup.
-5. Claude applies your comments and reopens the updated doc — with the same filename, so your comment thread stays intact.
+4. **Paste the copied block back into chat.** It begins with a one-line instruction, so Claude knows to revise and regenerate even in a fresh chat with no personal setup.
+5. Claude **applies your comments and reopens the updated doc** — with the **same filename**, so your comment thread stays intact.
 
 ## Comments that carry over
 
