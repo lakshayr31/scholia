@@ -134,10 +134,14 @@ Then:
    backticked name in the header line or the `## Comments on <filename>` line — see step 2's
    REVISION path; never re-derive it). Do NOT rotate any version stamp — **comments persist across
    the regeneration** under the single `scholia::<filename>` key. Every prior comment carries over:
-   on reload it becomes **Carried-over** (a "↻" mark and a Resolve button), re-anchoring to its
-   original text where that survives and going **detached** (kept in the list, no highlight) where
-   you rewrote or removed it. Keeping the filename identical is exactly what lets the browser reopen
-   the same doc with its comment thread intact — so the user can confirm each change and Resolve it.
+   on reload it becomes **Carried-over** (a "↻" mark and a Resolve button). Comments re-anchor by
+   BLOCK POSITION, not by text: each is pinned to the section + the block's ordinal position (the
+   Nth paragraph/list-item/heading of its section), so editing a block's wording IN PLACE keeps its
+   comment attached, and a comment only goes **detached** (kept in the list, no highlight) when its
+   whole block is removed. Prefer revising blocks in place over inserting/reordering blocks above a
+   commented one — inserting a block shifts later positions, which can move a comment's highlight to
+   an adjacent block. Keeping the filename identical is exactly what lets the browser reopen the same
+   doc with its comment thread intact — so the user can confirm each change and Resolve it.
 4. **Emit a resolution-notes map.** In the regenerated HTML, add ONE JSON script tag —
    `<script type="application/json" id="scholia-resolution-notes">{ … }</script>` — placed inside
    `<body>` but OUTSIDE `<main>` (e.g. right before `</body>`), so it never affects the document's

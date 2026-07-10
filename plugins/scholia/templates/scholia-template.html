@@ -96,11 +96,6 @@
   pre .commentable > .add-line-comment { left: -28px; width: 18px; height: 18px; font-size: 12px; top: 0; }
   li.commentable > .add-line-comment { left: -50px; }
 
-  /* Comment highlight (selection comments) */
-  .commented { background: var(--highlight); cursor: pointer; padding: 1px 2px; border-radius: 2px; position: relative; }
-  .commented:hover, .commented.active { background: var(--highlight-active); }
-  .commented .marker { position: absolute; top: -10px; right: -8px; background: var(--accent); color: white; font-size: 10px; line-height: 14px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; font-weight: 600; }
-
   /* Block-comment indicator (small left-edge stripe + badge) */
   .has-block-comment { box-shadow: inset 3px 0 0 var(--accent); padding-left: 6px; }
   .has-block-comment .block-badge { position: absolute; left: -34px; top: 0; width: 22px; height: 22px; background: var(--accent); color: white; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; }
@@ -175,9 +170,6 @@
   .comment-item.resolved .quote { background: #e8e8e5; color: #999; text-decoration: line-through; }
 
   /* Doc highlight — resolved (greyed / struck) + carried-over (rotate glyph) */
-  .commented.resolved { background: #e8e8e5; color: #999; text-decoration: line-through; }
-  .commented.resolved .marker { background: #bbb; }
-  .commented.carried { box-shadow: 0 0 0 1px var(--accent) inset; }
   .block-badge.resolved { background: #bbb; }
   .has-block-comment.resolved { box-shadow: inset 3px 0 0 #bbb; }
   .block-badge.carried::after { content: '↻'; position: absolute; top: -7px; right: -7px; font-size: 9px; line-height: 1; background: var(--panel); color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 1px 2px; }
@@ -438,7 +430,7 @@
       return {
         acceptNode: (node) => {
           if (!node.parentElement) return NodeFilter.FILTER_REJECT;
-          if (node.parentElement.closest('.commented, script, style, .add-line-comment, .block-badge, #compose, #selection-toolbar, aside, header')) return NodeFilter.FILTER_REJECT;
+          if (node.parentElement.closest('script, style, .add-line-comment, .block-badge, .block-hl-badge, #compose, #selection-toolbar, aside, header')) return NodeFilter.FILTER_REJECT;
           return NodeFilter.FILTER_ACCEPT;
         }
       };
