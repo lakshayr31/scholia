@@ -107,6 +107,18 @@
   li.commentable.has-block-comment .block-badge { left: -50px; }
   pre .commentable.has-block-comment .block-badge { left: -28px; width: 18px; height: 18px; font-size: 10px; }
 
+  /* Whole-block selection highlight — a selection comment fills every commentable
+     block it touches (block-anchored, like line comments). The numbered badge sits
+     on the FIRST touched block only, top-right like the old .marker. */
+  .block-comment-hl { background: var(--highlight); border-radius: 3px; cursor: pointer; }
+  .block-comment-hl:hover, .block-comment-hl.active { background: var(--highlight-active); }
+  .block-comment-hl > .block-hl-badge { position: absolute; top: -10px; right: -8px; min-width: 16px; height: 16px; padding: 0 4px; background: var(--accent); color: white; border-radius: 8px; font-size: 10px; line-height: 14px; font-weight: 600; display: flex; align-items: center; justify-content: center; z-index: 10; }
+  /* Resolved selection block — greyed + struck (matches the resolved line/card look). */
+  .block-comment-hl.resolved { background: #e8e8e5; color: #999; text-decoration: line-through; }
+  .block-comment-hl.resolved > .block-hl-badge { background: #bbb; text-decoration: none; }
+  /* Carried-over selection block — accent ring, mirroring the carried marker. */
+  .block-comment-hl.carried { box-shadow: 0 0 0 1px var(--accent) inset; }
+
   /* Selection toolbar */
   #selection-toolbar { position: absolute; background: var(--ink); color: white; padding: 4px 6px; border-radius: 4px; box-shadow: var(--shadow); display: none; z-index: 200; }
   #selection-toolbar button { background: transparent; color: white; border: none; font-family: inherit; font-size: 13px; cursor: pointer; padding: 2px 8px; }
@@ -242,12 +254,6 @@
   function isExcluded(el) {
     return !!el.closest('nav.toc, aside, header, #compose, #selection-toolbar');
   }
-  // ASCII whitespace only (space, tab, CR/LF, form-feed, vertical-tab) — the same
-  // set collapsed by DocModel.normalizeText's regex. Deliberately excludes Unicode
-  // spaces like U+00A0 (&nbsp;), which are meaningful content and must not collapse.
-  function isAsciiWhitespace(ch) {
-    return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v';
-  }
   const BUTTON_LABELS = { resolve: 'Resolve', reopen: 'Reopen', jump: 'Jump', edit: 'Edit', delete: 'Delete' };
 
   // In-template replacements for native alert()/confirm() so messaging stays inside
@@ -292,8 +298,8 @@
       this.quote = props.quote;
       this.comment = props.comment;
       this.createdAt = props.createdAt;
-      this.blockId = props.blockId;           // block comments only
-      this.occurrence = props.occurrence;     // selection comments only
+      this.blockId = props.blockId;           // block (line) comments only
+      this.blockIds = props.blockIds || [];   // selection comments only — every block the selection touches
       this.generation = props.generation || null;  // birth doc-hash: the content-hash when it was created
       this.resolved = props.resolved || false;      // true once the user confirms it was addressed
       this.resolutionNote = props.resolutionNote || null;  // Claude's "how it was addressed" summary
@@ -326,7 +332,7 @@
       };
       if (this.resolutionNote) o.resolutionNote = this.resolutionNote;
       if (this.kind === 'block') o.blockId = this.blockId;
-      else o.occurrence = this.occurrence;
+      else o.blockIds = this.blockIds;
       return o;
     }
     static fromJSON(o) { return new Comment(o); }
@@ -353,26 +359,15 @@
       if (comment.kind === 'block') {
         matched = !!this.findBlockElement(comment.blockId);
       } else {
-        // Re-anchor in the SAME normalized, cross-node text space the quote's
-        // occurrence was counted against at create time (see getOccurrenceInMain)
-        // and the highlighter searches (see DocDecorator.applySelectionHighlights).
-        // At load time no .commented spans exist yet, so this space matches the one
-        // the highlighter builds after clearSelectionHighlights() — anchor and
-        // highlight therefore agree. Normalizing both sides lets a quote that spans
-        // several elements — whose source has newlines+indentation between blocks but
-        // whose selection renders as single spaces — still match.
-        const needle = DocModel.normalizeText(comment.quote);
-        const { normalized } = this.buildNormalizedIndex();
-        matched = DocModel.countOccurrences(normalized, needle) >= comment.occurrence;
+        // Block-anchored: a selection comment survives as long as ANY commentable
+        // block it touched still exists (matched by block-id, exactly like line
+        // comments). An old comment with no blockIds (pre-block-model, quote-only)
+        // has nothing to match and is treated as detached — we never fall back to
+        // text re-matching the quote.
+        matched = comment.blockIds.some(id => !!this.findBlockElement(id));
       }
       comment.detached = !matched;
       return matched;
-    }
-    static countOccurrences(hay, needle) {
-      if (!needle) return 0;
-      let count = 0, idx = -1;
-      while ((idx = hay.indexOf(needle, idx + 1)) !== -1) count++;
-      return count;
     }
     splitCodeLines() {
       this.mainEl.querySelectorAll('pre').forEach(pre => {
@@ -423,17 +418,22 @@
       }
       return null;
     }
-    // Collapse each run of ASCII whitespace to a single space, then trim. Applied
-    // identically to the incoming quote and (via buildNormalizedIndex) to the search
-    // space, so a cross-block selection — source "…end.\n\n  Start…", rendered
-    // "…end. Start…" — normalizes to one canonical form on both sides and matches.
-    static normalizeText(s) {
-      return String(s).replace(/[ \t\n\r\f\v]+/g, ' ').trim();
+    // Every commentable block a selection Range touches, in document order — the
+    // block-id anchor for selection comments. querySelectorAll yields document order,
+    // and we test the block ELEMENTS themselves (never their injected +/badge child
+    // nodes), so a within-line selection yields [oneBlock] and a cross-block selection
+    // yields [p1, p2, …] or [li1, li2, li3].
+    blockIdsForRange(range) {
+      const ids = [];
+      document.querySelectorAll(COMMENTABLE_SELECTOR).forEach(block => {
+        if (range.intersectsNode(block)) ids.push(this.deriveBlockId(block));
+      });
+      return ids;
     }
-    // The one text-node filter shared by occurrence counting, re-anchoring, and
-    // highlighting so all three walk the SAME text space. Rejects injected
-    // decorations (gutter "+", block badges, markers, already-wrapped highlights)
-    // and app chrome, so counts never fold in non-authored characters.
+    // Text-node filter that rejects injected decorations (gutter "+", block badges,
+    // markers) and app chrome, so a captured quote reflects only authored content.
+    // Used by elementAcceptedText (line-comment quote) and rangeAcceptedText
+    // (selection-comment display quote).
     static acceptedTextFilter() {
       return {
         acceptNode: (node) => {
@@ -453,68 +453,12 @@
       while ((node = walker.nextNode())) out += node.nodeValue;
       return out.trim();
     }
-    // Walk the accepted text nodes and build a single normalized search string plus a
-    // reverse map from each normalized char index back to its raw origin. The
-    // whitespace-run collapse carries ACROSS node boundaries (inWhitespaceRun), so the
-    // newline+indent text node that sits between two blocks becomes the single space
-    // that joins them in the normalized string — which is what makes cross-node
-    // matches land.
-    // Returns { normalized, map, nodeOrdinals } where:
-    //   normalized   — the collapsed concatenation of all accepted text
-    //   map[i]       — { node, offset }: raw text node + offset that produced norm char i
-    //                  (for a collapsed whitespace run, points at the run's FIRST char)
-    //   nodeOrdinals — Map<textNode, docOrderIndex>, used by normalizedIndexAt to
-    //                  locate a selection start within the normalized string
-    buildNormalizedIndex() {
-      const walker = document.createTreeWalker(this.mainEl, NodeFilter.SHOW_TEXT, DocModel.acceptedTextFilter());
-      let normalized = '';
-      const map = [];
-      const nodeOrdinals = new Map();
-      let inWhitespaceRun = false;
-      let ordinal = 0;
-      let node;
-      while ((node = walker.nextNode())) {
-        nodeOrdinals.set(node, ordinal++);
-        const value = node.nodeValue;
-        for (let k = 0; k < value.length; k++) {
-          if (isAsciiWhitespace(value[k])) {
-            if (inWhitespaceRun) continue;    // collapse — the space was already emitted at the run's start
-            normalized += ' ';
-            map.push({ node, offset: k });
-            inWhitespaceRun = true;
-          } else {
-            normalized += value[k];
-            map.push({ node, offset: k });
-            inWhitespaceRun = false;
-          }
-        }
-      }
-      return { normalized, map, nodeOrdinals };
-    }
-    // Map a raw (textNode, offset) selection start into the normalized string's index
-    // space, so occurrence counting can start from the selected instance. Precise only
-    // when the container is one of the accepted text nodes; any other container
-    // (element boundary, excluded node) falls back to 0 → count from doc start, which
-    // mirrors the pre-normalization behavior.
-    normalizedIndexAt(container, rawOffset, map, nodeOrdinals) {
-      if (!nodeOrdinals.has(container)) return 0;
-      const targetOrdinal = nodeOrdinals.get(container);
-      for (let i = 0; i < map.length; i++) {
-        const entryOrdinal = nodeOrdinals.get(map[i].node);
-        if (entryOrdinal > targetOrdinal) return i;               // passed the container without a hit → first char after it
-        if (entryOrdinal === targetOrdinal && map[i].offset >= rawOffset) return i;
-      }
-      return map.length;
-    }
-    // Extract the text a Range covers, restricted to the SAME accepted text nodes
-    // buildNormalizedIndex walks — the gutter "+", block badges, markers, and app
-    // chrome are filtered out. Using window.getSelection().toString() here would fold
-    // the gutter "+" (and badge digits) into the quote; since the matcher's search space
-    // excludes those characters, the contaminated quote would never be found and the
-    // comment would render no highlight (Bug A). Raw characters are preserved —
-    // including the newline+indent between blocks that the matcher collapses to a
-    // joining space — so normalizeText() lands both the quote and the haystack on the
-    // same canonical form. Only the ends are trimmed.
+    // Extract the text a Range covers, restricted to accepted text nodes (the gutter
+    // "+", block badges, markers, and app chrome are filtered out). This is the clean
+    // quote stored on a selection comment for DISPLAY only — the sidebar card and the
+    // copy/paste block. Using window.getSelection().toString() would fold the gutter
+    // "+" (and badge digits) into the quote. Anchoring no longer uses this text — a
+    // selection comment re-anchors by its blockIds — so only the display value matters.
     rangeAcceptedText(range) {
       const walker = document.createTreeWalker(this.mainEl, NodeFilter.SHOW_TEXT, DocModel.acceptedTextFilter());
       let out = '';
@@ -527,18 +471,6 @@
         out += value.slice(from, to);
       }
       return out.trim();
-    }
-    getOccurrenceInMain(range) {
-      const needle = DocModel.normalizeText(this.rangeAcceptedText(range));
-      if (!needle) return -1;
-      const { normalized, map, nodeOrdinals } = this.buildNormalizedIndex();
-      const startIndex = this.normalizedIndexAt(range.startContainer, range.startOffset, map, nodeOrdinals);
-      let occurrence = 0, idx = -1;
-      while ((idx = normalized.indexOf(needle, idx + 1)) !== -1) {
-        occurrence++;
-        if (idx >= startIndex) return occurrence;    // first instance at/after the selection start = the one selected
-      }
-      return occurrence;
     }
   }
 
@@ -703,13 +635,14 @@
       this.applySelectionHighlights();
       this.applyBlockBadges();
     }
+    // Strip every whole-block selection highlight cleanly so decorate() can re-apply
+    // from scratch (idempotent across repeated cycles): drop the highlight/state
+    // classes, remove all numbered badges, and clear the block's comment-id.
     clearSelectionHighlights() {
-      this.mainEl.querySelectorAll('.commented').forEach(span => {
-        const parent = span.parentNode;
-        Array.from(span.querySelectorAll('.marker')).forEach(m => m.remove());
-        while (span.firstChild) parent.insertBefore(span.firstChild, span);
-        parent.removeChild(span);
-        parent.normalize();
+      this.mainEl.querySelectorAll('.block-comment-hl').forEach(el => {
+        el.classList.remove('block-comment-hl', 'resolved', 'carried');
+        el.querySelectorAll('.block-hl-badge').forEach(badge => badge.remove());
+        el.removeAttribute('data-comment-id');
       });
     }
     clearBlockBadges() {
@@ -737,95 +670,39 @@
         target.appendChild(badge);
       });
     }
+    // Highlight the WHOLE commentable block(s) each selection comment touches. A
+    // comment's blockIds are resolved to live elements (findBlockElement); every
+    // surviving block is filled (.block-comment-hl) and tagged with the comment id so a
+    // click opens the sidebar; the numbered badge (index in store.comments + 1) goes on
+    // the FIRST surviving block only. Resolved/carried state styling is applied to each
+    // block consistently. Blocks whose id no longer resolves are skipped; a comment with
+    // NO surviving block is marked detached (sidebar-only, no highlight).
     applySelectionHighlights() {
       const hash = this.docModel.hash;
-      // Build the normalized search space ONCE for the whole pass. decorate() calls
-      // clearSelectionHighlights() first, so no .commented spans exist yet and the
-      // haystack is the full, decoration-excluded document text. Locating every comment
-      // against this single stable index — instead of rebuilding it per comment as each
-      // wrap removes earlier .commented text — keeps occurrence numbers meaning what
-      // they meant at create time, so duplicate quotes and post-clearResolved reloads
-      // anchor to the right instance (Bug B).
-      const { normalized, map } = this.docModel.buildNormalizedIndex();
-      const matches = [];
       this.store.comments.forEach((c, i) => {
         if (c.kind !== 'selection') return;
-        const needle = DocModel.normalizeText(c.quote);
-        const matchStart = needle ? DocDecorator.findNthOccurrenceStart(normalized, needle, c.occurrence) : -1;
-        if (matchStart === -1) {
-          c.detached = true;                  // not locatable → show detached in the sidebar, don't silently vanish
-          return;
-        }
-        c.detached = false;
-        const extraClasses = c.resolved ? ['resolved'] : (c.status(hash) === 'carried-over' ? ['carried'] : []);
-        matches.push({ id: c.id, markerNumber: i + 1, matchStart, matchEnd: matchStart + needle.length, extraClasses });
+        if (c.detached) return;               // anchor() already found no surviving block
+        const blocks = [];
+        c.blockIds.forEach(id => {
+          const el = this.docModel.findBlockElement(id);
+          if (el) blocks.push(el);
+        });
+        if (!blocks.length) { c.detached = true; return; }  // defensive: nothing to highlight
+        const stateClass = c.resolved ? 'resolved' : (c.status(hash) === 'carried-over' ? 'carried' : '');
+        blocks.forEach((el, blockIndex) => {
+          el.classList.add('block-comment-hl');
+          if (stateClass) el.classList.add(stateClass);
+          el.dataset.commentId = c.id;
+          if (blockIndex === 0) {             // numbered badge on the first touched block only
+            const badge = document.createElement('span');
+            badge.className = 'block-hl-badge' + (stateClass ? ' ' + stateClass : '');
+            badge.textContent = i + 1;
+            badge.title = c.comment;
+            badge.dataset.commentId = c.id;
+            el.appendChild(badge);
+          }
+        });
       });
-      // Apply wraps LAST match first. Wrapping splits a text node and shifts the offsets
-      // of everything after the wrap point; going back-to-front leaves every
-      // not-yet-applied match's (node, offset) entries in `map` still valid — an earlier
-      // match always sits in the retained "before" text of a later wrap.
-      matches.sort((a, b) => b.matchStart - a.matchStart);
-      matches.forEach(m => this.wrapNormalizedRange(map, m.matchStart, m.matchEnd, m.id, m.extraClasses, m.markerNumber));
-    }
-    // Return the normalized-space start index of the nth occurrence of `needle`, or -1.
-    static findNthOccurrenceStart(normalized, needle, n) {
-      let occurrence = 0, idx = -1;
-      while ((idx = normalized.indexOf(needle, idx + 1)) !== -1) {
-        occurrence++;
-        if (occurrence === n) return idx;
-      }
-      return -1;
-    }
-    // Wrap the normalized range [matchStart, matchEnd) — mapped back to raw text-node
-    // slices via `map` — in .commented spans, one per covered node. Node order is
-    // monotonic across the map, so each node forms one contiguous run. The numbered
-    // .marker badge is placed on the FIRST non-whitespace segment only; pure-whitespace
-    // boundary slices (e.g. the newline+indent joining two blocks) are skipped.
-    wrapNormalizedRange(map, matchStart, matchEnd, commentId, extraClasses, markerIndex) {
-      const segments = [];
-      let i = matchStart;
-      while (i < matchEnd) {
-        const node = map[i].node;
-        const from = map[i].offset;
-        let lastOffset = from;
-        while (i < matchEnd && map[i].node === node) {
-          lastOffset = map[i].offset;
-          i++;
-        }
-        segments.push({ node, from, to: lastOffset + 1 });  // map offsets are inclusive; slice end is exclusive
-      }
-      let markerPlaced = false;
-      segments.forEach(seg => {
-        const slice = seg.node.nodeValue.slice(seg.from, seg.to);
-        if (!slice.trim()) return;
-        this.wrapNodeSlice(seg.node, seg.from, seg.to, commentId, extraClasses, markerPlaced ? null : markerIndex);
-        markerPlaced = true;
-      });
-    }
-    // Wrap raw offsets [from, to) of a single text node in a .commented span, keeping
-    // the un-matched head/tail as sibling text nodes. `markerIndex` is null for every
-    // segment except the first, so only one numbered badge is rendered per comment.
-    wrapNodeSlice(node, from, to, commentId, extraClasses, markerIndex) {
-      const raw = node.nodeValue;
-      const before = raw.slice(0, from);
-      const matched = raw.slice(from, to);
-      const after = raw.slice(to);
-      const span = document.createElement('span');
-      span.className = 'commented';
-      if (extraClasses && extraClasses.length) span.classList.add(...extraClasses);
-      span.dataset.commentId = commentId;
-      span.appendChild(document.createTextNode(matched));
-      if (markerIndex != null) {
-        const marker = document.createElement('span');
-        marker.className = 'marker';
-        marker.textContent = markerIndex;
-        span.appendChild(marker);
-      }
-      const parent = node.parentNode;
-      const afterNode = document.createTextNode(after);
-      node.nodeValue = before;
-      parent.insertBefore(span, node.nextSibling);
-      parent.insertBefore(afterNode, span.nextSibling);
     }
   }
 
@@ -933,7 +810,8 @@
     jumpToComment(c) {
       let target = null;
       if (c.kind === 'selection') {
-        target = document.querySelector(`.commented[data-comment-id="${c.id}"]`);
+        // First highlighted block in document order — the one carrying the badge.
+        target = document.querySelector(`.block-comment-hl[data-comment-id="${c.id}"]`);
       } else {
         const badge = document.querySelector(`.block-badge[data-comment-id="${c.id}"]`);
         target = badge ? badge.parentElement : null;
@@ -1022,7 +900,7 @@
     openEditCompose(c) {
       const target = c.kind === 'block'
         ? document.querySelector(`.block-badge[data-comment-id="${c.id}"]`)?.parentElement
-        : document.querySelector(`.commented[data-comment-id="${c.id}"]`);
+        : document.querySelector(`.block-comment-hl[data-comment-id="${c.id}"]`);
       const rect = target ? target.getBoundingClientRect() : { top: 100, left: 100, height: 20, width: 200 };
       this.pending = null;
       this.$compose.dataset.editId = c.id;
@@ -1070,7 +948,7 @@
           createdAt: new Date().toISOString(),
         };
         if (this.pending.kind === 'block') props.blockId = this.pending.blockId;
-        else if (this.pending.kind === 'selection') props.occurrence = this.pending.occurrence;
+        else if (this.pending.kind === 'selection') props.blockIds = this.pending.blockIds;
         this.store.add(new Comment(props));
       }
       this.refresh();
@@ -1095,12 +973,23 @@
           const text = this.doc.rangeAcceptedText(range);
           if (!text || text.length < 2) { this.$toolbar.style.display = 'none'; return; }
           const ctx = this.doc.sectionContext(range.startContainer);
+          // Anchor by the commentable blocks the selection touches (document order).
+          let blockIds = this.doc.blockIdsForRange(range);
+          if (!blockIds.length) {
+            // Selection landed off any commentable block (rare) — fall back to the
+            // block containing its start so the comment isn't born detached.
+            const startEl = range.startContainer.nodeType === 1
+              ? range.startContainer
+              : range.startContainer.parentElement;
+            const block = startEl ? startEl.closest(COMMENTABLE_SELECTOR) : null;
+            if (block) blockIds = [this.doc.deriveBlockId(block)];
+          }
           this.pending = {
             kind: 'selection',
             sectionId: ctx.sectionId,
             sectionTitle: ctx.sectionTitle,
             quote: text,
-            occurrence: this.doc.getOccurrenceInMain(range),
+            blockIds: blockIds,
           };
           const rect = range.getBoundingClientRect();
           this.$toolbar.style.top = (window.scrollY + rect.top - 36) + 'px';
@@ -1156,9 +1045,12 @@
     }
     bindGlobalClick() {
       document.addEventListener('click', (e) => {
-        const span = e.target.closest('.commented');
+        // A selection highlight carries its id on the block itself (a click on its
+        // badge resolves to the block via closest); a line comment carries it on the
+        // gutter .block-badge.
+        const hlBlock = e.target.closest('.block-comment-hl');
         const badge = e.target.closest('.block-badge');
-        const id = (span && span.dataset.commentId) || (badge && badge.dataset.commentId);
+        const id = (hlBlock && hlBlock.dataset.commentId) || (badge && badge.dataset.commentId);
         if (!id) return;
         document.body.classList.add('sidebar-open');
         const item = document.querySelector(`.comment-item[data-comment-id="${id}"]`);
