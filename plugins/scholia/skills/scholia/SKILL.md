@@ -56,11 +56,12 @@ can always force it explicitly.
    `cp "${CLAUDE_PLUGIN_ROOT}/templates/scholia-template.html" ./.claude-output/<filename>`
    (If `cp` is not permitted, Read the template and Write the identical bytes to the target.)
 
-6. **Inject a unique version stamp.** In the copied file, replace the empty `content` of
-   `<meta name="scholia-doc-version" content="">` with a value unique to THIS generation —
-   a Unix timestamp, an ISO timestamp, or a short content hash. This stamp scopes the
-   browser's saved comments; it MUST change on every generation and regeneration, otherwise
-   stale comments will reload and mis-anchor.
+6. **No version stamp — comments persist.** Earlier versions injected a per-generation stamp so
+   that regenerating a doc *retired* its comments. That is no longer the behaviour. Comments now
+   **persist** across regenerations under a single filename-scoped key (`scholia::<filename>`):
+   they carry over, gain a Resolve button, and move to a Resolved tab once you confirm them. There
+   is nothing to stamp — the engine derives everything from the document's content hash on its own.
+   Skip straight to filling the template.
 
 7. **Fill the template** with Edit (leave the comment machinery alone):
    - `<title>__TITLE__</title>` → the document title,
@@ -86,9 +87,6 @@ can always force it explicitly.
      "Try the commenting" heading must NOT appear anywhere in the file. If any remain, you
      failed to fully replace the placeholder content between `<!-- CONTENT START -->` and
      `<!-- CONTENT END -->`.
-   - **Version stamp present.** The `<meta name="scholia-doc-version" content="…">` tag must have
-     a **non-empty** `content` — the unique stamp from step 6. An empty stamp breaks comment
-     scoping.
    - **Exactly one `<h1>`, and well-formed sections.** The document must contain exactly one
      `<h1>`. Every `<section>` must have an `id` that is both **non-empty** and **unique** across
      the file — the comment engine derives a comment's section from `section[id]`, so duplicate or
@@ -117,24 +115,46 @@ may be reworded or dropped:
 
 - it contains the stable sentinel line `<!-- scholia:revision v1 -->`, OR
 - it contains at least one comment entry matching the structural pattern: a header line
-  `[#N — Line in section: "…"]` or `[#N — Span in section: "…"]`, followed by a quoted anchor line
-  `> "…"`, followed by a `Comment: …` line.
+  `[#N — Line in section: "…"]` or `[#N — Span in section: "…"]` (a stable `· id=<commentId>` may
+  appear right after `#N`), followed by a quoted anchor line `> "…"`, followed by a `Comment: …` line.
 
 When either condition matches, treat the whole paste as anchored feedback and revise the document.
 
 Then:
 
-1. Read each entry — index, `Line`/`Span`, section title, the quoted anchor, and the comment.
-   Use the quote + section title to locate the target in the current document.
+1. Read each entry — its index, its stable `id` (shown as `· id=<commentId>` in the header line),
+   `Line`/`Span`, section title, the quoted anchor, and the comment. Use the quote + section title to
+   locate the target in the current document, and keep each `id` — you will key its resolution note
+   back to it in step 4. If an entry is marked `· detached` in its header line (or its quoted anchor
+   can no longer be found in the current document because a prior round rewrote or removed that text),
+   do NOT skip it — fall back to the section title plus the comment text to decide what the change
+   should be.
 2. Apply **every** requested change to the document content.
 3. Re-run the generation procedure, reusing the filename **verbatim** from the pasted block (the
    backticked name in the header line or the `## Comments on <filename>` line — see step 2's
-   REVISION path; never re-derive it), with a **new** unique version stamp (step 6). The new stamp
-   gives a fresh storage key, so the old — now possibly misaligned — comments are retired and the
-   reopened doc is clean.
-4. Keep section `id`s stable across the revision where you can, so any surviving comments
+   REVISION path; never re-derive it). Do NOT rotate any version stamp — **comments persist across
+   the regeneration** under the single `scholia::<filename>` key. Every prior comment carries over:
+   on reload it becomes **Carried-over** (a "↻" mark and a Resolve button). Comments re-anchor by
+   BLOCK POSITION, not by text: each is pinned to the section + the block's ordinal position (the
+   Nth paragraph/list-item/heading of its section), so editing a block's wording IN PLACE keeps its
+   comment attached, and a comment only goes **detached** (kept in the list, no highlight) when its
+   whole block is removed. Prefer revising blocks in place over inserting/reordering blocks above a
+   commented one — inserting a block shifts later positions, which can move a comment's highlight to
+   an adjacent block. Keeping the filename identical is exactly what lets the browser reopen the same
+   doc with its comment thread intact — so the user can confirm each change and Resolve it.
+4. **Emit a resolution-notes map.** In the regenerated HTML, add ONE JSON script tag —
+   `<script type="application/json" id="scholia-resolution-notes">{ … }</script>` — placed inside
+   `<body>` but OUTSIDE `<main>` (e.g. right before `</body>`), so it never affects the document's
+   content hash or the commentable text. Its JSON is an object keyed by the comment `id`s from the
+   pasted block, each value a one-line, plain-English summary of HOW you addressed that comment —
+   e.g. `{"c7a3":"Lowered the enterprise tier to 10% and added an annual option.","c9f1":"Rewrote the vague Q3 wording to a concrete 15 Aug date."}`.
+   Include ONLY ids you actually addressed; a comment you did not change gets no entry (its card then
+   shows without a note — never blank or invented). On reload the engine merges each note onto its
+   carried-over comment, so the user sees "How it was addressed" beside their original comment before
+   they Resolve it. HTML-escape the note values like any other authored content.
+5. Keep section `id`s stable across the revision where you can, so carried-over comments
    still map to the right section.
-5. If the pasted block is recognised as a revision request (e.g. the sentinel is present) but has
+6. If the pasted block is recognised as a revision request (e.g. the sentinel is present) but has
    **zero** comment entries, ask the user what they want changed rather than inventing edits.
 
 ## Notes
