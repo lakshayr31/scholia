@@ -13,6 +13,14 @@ Selecting text highlights every whole block it touches (line, paragraph, or list
 
 Keyboard: **Cmd/Ctrl+Enter** saves a comment, **Esc** cancels.
 
+## Features
+
+- **Comment anywhere** — click the gutter `+` for a whole line, or select text to highlight every block it touches (line, paragraph, list item).
+- **Paste-back revision loop** — one **Copy comments** button produces a self-instructing block; paste it into any Claude chat and the doc is revised and reopened, same filename.
+- **Comments that carry over** — a regeneration keeps your comments; each is marked carried-over with a **Resolve** button and a **"How it was addressed"** note from Claude.
+- **Open / Resolved tabs** — resolve, reopen, resolve-all, and clear-resolved; resolved comments drop out of the next copy.
+- **Local-first** — comments live in your browser; no server, account, or database. No runtime deps beyond a POSIX shell and a browser.
+
 ## Install
 
 Two commands inside Claude Code (replace `<owner>` with the GitHub owner or org that hosts this repo):
@@ -64,6 +72,10 @@ Scholia auto-selects when Claude is about to produce a substantial multi-section
 ## Platform notes
 
 Generation is pure Read/Write/Edit plus a single directory-create — no Python or Node required. To display the finished file, Claude opens it directly with the platform-appropriate command: `open` on macOS, `xdg-open` on Linux (including WSL, which takes the Linux path), and `start` on Windows (Git Bash / Cygwin).
+
+## Contributing
+
+Issues and pull requests are welcome. Fork the repo, branch, and open a PR — `main` is protected, so every change is merged only after the maintainer reviews and approves it. Please keep the template a single self-contained HTML file (inline CSS + vanilla JS, no external dependencies); that constraint is the point of the project.
 
 ## License
 
