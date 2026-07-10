@@ -9,7 +9,9 @@ When Claude is about to hand you a substantial document — a plan, report, rese
 - hovering any line and clicking the gutter `+` to comment on that whole line, or
 - selecting any span of text and clicking **+ Add comment**.
 
-Comments live in your browser (localStorage) and survive a reload. When you're done, click **Copy comments** (top right). That puts a self-instructing block on your clipboard: paste it back into any Claude chat and Claude revises the document and regenerates the HTML. No server, no account, no database.
+Selecting text highlights every whole block it touches (line, paragraph, or list item) in yellow with a numbered badge; the gutter `+` comments a single line. Comments live in your browser (localStorage) and survive a reload. When you're done, click **Copy comments** (top right). That puts a self-instructing block on your clipboard: paste it back into any Claude chat and Claude revises the document and regenerates the HTML. No server, no account, no database.
+
+Keyboard: **Cmd/Ctrl+Enter** saves a comment, **Esc** cancels.
 
 ## Install
 
@@ -40,7 +42,16 @@ Plugin skills are namespaced `plugin:skill`; here both are `scholia`.
 2. Comment on lines (`+`) and spans (**+ Add comment**). Manage them in the right-hand sidebar — Jump, Edit, Delete.
 3. Click **Copy comments**.
 4. Paste the copied block back into chat. It begins with a one-line instruction, so Claude knows to revise and regenerate even in a fresh chat with no personal setup.
-5. Claude applies your comments and reopens the updated doc. A new version stamp retires the old comments so nothing mis-anchors.
+5. Claude applies your comments and reopens the updated doc — with the same filename, so your comment thread stays intact.
+
+## Comments that carry over
+
+When Claude regenerates the doc, your comments don't disappear — they **carry over** and you track each to done:
+
+- Every prior comment reappears marked **carried-over** (a "↻") with a **Resolve** button. Fresh comments made on the current version have no Resolve button.
+- Each carried-over comment shows a **"How it was addressed"** note — Claude's one-line summary of what it changed — so you can confirm the fix in place, then **Resolve** it.
+- Resolved comments move to a **Resolved** tab, are excluded from the next **Copy comments**, and can be **Reopen**ed. **Resolve all carried-over** and **Clear resolved** handle them in bulk.
+- If Claude removed the text a comment was on, the comment goes **detached**: it stays in the list (still resolvable) with no highlight.
 
 ## Turning off auto-invoke
 
@@ -53,3 +64,7 @@ Scholia auto-selects when Claude is about to produce a substantial multi-section
 ## Platform notes
 
 Generation is pure Read/Write/Edit plus a single directory-create — no Python or Node required. To display the finished file, Claude opens it directly with the platform-appropriate command: `open` on macOS, `xdg-open` on Linux (including WSL, which takes the Linux path), and `start` on Windows (Git Bash / Cygwin).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

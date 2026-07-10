@@ -1,5 +1,5 @@
 {
   "name": "scholia",
   "description": "Render substantial Claude Code documents (plans, reports, research, comparisons) as self-contained commentable HTML and open it in the browser; comment inline, copy, and paste back to revise.",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
